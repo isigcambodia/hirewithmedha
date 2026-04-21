@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-21-v4 membership query now filters by user_id (critical fix) -->
+<!-- build: 2026-04-21-v5 requester dashboard filters by real user id -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-21-v4';
+const HWM_BUILD = '2026-04-21-v5';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1777,6 +1777,10 @@ function reqFromDb(row) {
     immediateSupervisorId: row._supervisor_legacy || 'U001',   // demo users stay client-side
     hiringManagerId: row._hm_legacy || 'U001',
     requesterId: row._requester_legacy || 'U001',
+    // Real UUIDs for ownership checks (multi-user filtering, etc.)
+    realRequesterId: row._requester_real || null,
+    realSupervisorId: row._supervisor_real || null,
+    realHiringManagerId: row._hm_real || null,
     jdFilename: row.jd_filename,
     status: row.workflow_status,
     approvalPath: row.approval_path || 'standard',
@@ -1944,7 +1948,14 @@ async function loadEverything() {
       // Map real auth UUIDs to demo USERS. Since only Chandy is real, default assigned to U009 (Sok Phanna) for display.
       uid === currentAuthUser?.id ? 'U009' : 'U009'
     );
-    row._requester_legacy = 'U001';  // Chandy is the prototype's default requester
+    // Preserve the REAL requester UUID from the DB for ownership filtering.
+    // If it matches the logged-in user, also map to the 'U001' demo id so
+    // prototype-code comparisons like r.requesterId === currentUserId still
+    // work for the logged-in person.
+    row._requester_real = row.requester_id;
+    row._supervisor_real = row.immediate_supervisor_id;
+    row._hm_real = row.hiring_manager_id;
+    row._requester_legacy = 'U001';  // kept for display fallback
     row._supervisor_legacy = 'U001';
     row._hm_legacy = 'U001';
     return reqFromDb(row);
@@ -2461,7 +2472,13 @@ function renderRequester() {
   if (currentView === 'new_req') { main.innerHTML = renderNewReqForm(); return; }
   if (currentView === 'req_detail' && selectedReqId) { main.innerHTML = renderRequesterDetail(selectedReqId); return; }
   
-  const myReqs = requisitions.filter(r => r.requesterId === currentUserId);
+  // ⭐ Filter by REAL requester id (Supabase auth UUID) for non-admins, so each
+  // Requester sees only the requisitions they actually submitted. Admins (i.e.
+  // you while testing) keep the legacy behaviour so the seed data stays visible.
+  const isAdmin = currentMember?.role === 'admin';
+  const myReqs = isAdmin
+    ? requisitions.filter(r => r.requesterId === currentUserId)        // legacy U001 match
+    : requisitions.filter(r => r.realRequesterId === currentAuthUser?.id);  // real UUID match
   const activeReqs = myReqs.filter(r => !['closed', 'rejected', 'cancelled', 'on_hold'].includes(r.status));
   const inApproval = activeReqs.filter(r => ['hrbp_review','fh_approval','ceo_approval','ta_assignment'].includes(r.status));
   const sourcing = activeReqs.filter(r => r.status === 'active_sourcing');
