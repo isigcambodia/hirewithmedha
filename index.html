@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-21-v3 role-switcher-hidden-for-non-admins -->
+<!-- build: 2026-04-21-v4 membership query now filters by user_id (critical fix) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-21-v3';
+const HWM_BUILD = '2026-04-21-v4';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -4444,9 +4444,12 @@ async function bootAfterAuth() {
   if (!user) return;
   currentAuthUser = user;
 
-  // Find tenant membership
+  // Find tenant membership — MUST filter by user_id; RLS lets all tenant members
+  // see each other's rows, so without this filter .limit(1) would return whoever
+  // the DB returns first (typically the admin, since they were inserted first).
   const { data: members, error: memErr } = await sb.from('tenant_members')
     .select('id, tenant_id, role, status, tenants(id, name, slug)')
+    .eq('user_id', user.id)
     .eq('status', 'active')
     .limit(1);
   if (memErr || !members?.length) {
