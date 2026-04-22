@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-22-v19 supervisor/HM pickers use 745-employee autocomplete; employee_id columns on requisitions -->
+<!-- build: 2026-04-22-v20 CV upload to Supabase Storage + signed-URL view with role-based PII gate -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v19';
+const HWM_BUILD = '2026-04-22-v20';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1390,6 +1390,7 @@ const TRANSLATIONS = {
     btn_assign: 'Assign & start sourcing', btn_save_reassign: 'Save reassignment',
     btn_reassign: 'Reassign',
     btn_view_jd: 'View JD',
+    btn_view_cv: 'View CV',
     btn_add_cand: 'Add candidate', btn_schedule: 'Schedule',
     btn_screen: 'Screen', btn_interview: 'Interview', btn_pre_emp: 'Pre-emp',
     btn_offer: 'Offer', btn_feedback: 'Feedback', btn_checks: 'Checks',
@@ -1584,6 +1585,7 @@ const TRANSLATIONS = {
     btn_assign: 'ចាត់តាំង និងចាប់ផ្តើម', btn_save_reassign: 'រក្សាទុកការចាត់តាំង',
     btn_reassign: 'ចាត់តាំងម្តងទៀត',
     btn_view_jd: 'មើលឯកសារការងារ',
+    btn_view_cv: 'មើលប្រវត្តិរូប',
     btn_add_cand: 'បន្ថែមបេក្ខជន', btn_schedule: 'កំណត់ពេល',
     btn_screen: 'ពិនិត្យ', btn_interview: 'សម្ភាសន៍', btn_pre_emp: 'ពិនិត្យមុន',
     btn_offer: 'ផ្តល់ជូន', btn_feedback: 'មតិ', btn_checks: 'ការពិនិត្យ',
@@ -1907,6 +1909,8 @@ function candFromDb(row, appRow) {
     phone: row.phone,
     source: (row.source || '').replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase()),
     cvFilename: row.cv_filename,
+    cvStoragePath: row.cv_storage_path,
+    cvUploadedAt: row.cv_uploaded_at,
     notes: row.notes,
     stage: appRow?.candidate_stage || 'sourcing',
     addedAt: appRow?.applied_at || row.created_at,
@@ -3193,6 +3197,32 @@ async function viewJD(reqDbId) {
   } catch (e) {
     console.error('viewJD failed:', e);
     toast('Could not open JD: ' + (e.message || e), true);
+  }
+}
+
+// ⭐ Fetch a short-lived signed URL for a CV and open it in a new tab.
+// Role-gated: CVs contain PII and should only be viewable by recruiters,
+// hiring managers, HRBPs, head TA, and admins. Requesters and function
+// heads are NOT meant to pre-evaluate candidates.
+async function viewCV(candDbId) {
+  const allowedRoles = ['admin','recruiter','hiring_manager','hrbp','head_ta'];
+  if (!allowedRoles.includes(currentMember?.role)) {
+    toast('You do not have permission to view CVs', true);
+    return;
+  }
+  if (!candDbId) { toast('CV unavailable (legacy candidate)', true); return; }
+  const cand = candidates.find(c => c._dbId === candDbId);
+  if (!cand || !cand.cvStoragePath) { toast('CV not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(cand.cvStoragePath, 3600);  // 1 hour TTL
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewCV failed:', e);
+    toast('Could not open CV: ' + (e.message || e), true);
   }
 }
 
@@ -4671,13 +4701,21 @@ function renderCandCard(c, isOnHold = false) {
     else if (c.offer.status === 'accepted') actions = `<span class="badge badge-success">${ICONS.check} Accepted</span>`;
     else if (c.offer.status === 'negotiating') actions = `<button class="btn btn-secondary" onclick="prepareOffer('${c.id}')" ${dis}>Update</button><button class="btn btn-success" onclick="offerResponse('${c.id}', 'accepted')" ${dis}>Accept</button>`;
   }
-  
+
+  // CV view button — only shown to roles allowed to view CVs (PII gate).
+  // Button click also re-checks permission in viewCV() as a server-side-style defense.
+  const canViewCV = ['admin','recruiter','hiring_manager','hrbp','head_ta'].includes(currentMember?.role);
+  const cvButton = (canViewCV && c.cvStoragePath)
+    ? `<button class="btn btn-secondary btn-sm" onclick="viewCV('${c._dbId}')" style="margin-top: 0.5rem; width: 100%;">${t('btn_view_cv') || 'View CV'}</button>`
+    : '';
+
   return `
     <div class="cand-card">
       <div class="cand-name">${c.name}</div>
       <div class="cand-meta">${c.source} · <span class="mono">${daysSince(c.stageChangedAt)}d</span> in stage</div>
       ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
       ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
+      ${cvButton}
       <div class="cand-actions">${actions}</div>
     </div>
   `;
@@ -4716,7 +4754,42 @@ async function submitCandidate(reqId) {
   const newCand = { id: generateCandidateId(), reqId, name, email, phone, source, cvFilename: cvFile.name, notes, stage: 'sourcing', addedAt: new Date().toISOString(), stageChangedAt: new Date().toISOString(), interview: null, feedback: [], preEmploymentChecks: {}, offer: null, status: 'active' };
   candidates.push(newCand);
   const ok = await persistCandidateChange(newCand, 'New candidate added to pipeline');
-  if (!ok) candidates.pop();  // roll back on failure
+  if (!ok) { candidates.pop(); return; }  // roll back on failure
+
+  // ⭐ Upload the CV PDF to Supabase Storage under:
+  //   cvs/{tenant_id}/{candidate_dbId}/{timestamp}-{sanitized_filename}
+  // Same graceful-failure pattern as JD: if upload fails, the candidate
+  // still exists (pipeline data is preserved), a toast warns the user.
+  if (newCand._dbId && currentMember?.tenant_id) {
+    try {
+      const ts = Date.now();
+      const safeName = cvFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `cvs/${currentMember.tenant_id}/${newCand._dbId}/${ts}-${safeName}`;
+      const { error: upErr } = await sb.storage
+        .from('hire-medha')
+        .upload(storagePath, cvFile, {
+          contentType: 'application/pdf',
+          upsert: false,
+        });
+      if (upErr) throw upErr;
+      const { error: updErr } = await sb
+        .from('candidates')
+        .update({
+          cv_storage_path: storagePath,
+          cv_uploaded_at: new Date().toISOString(),
+          cv_filename: cvFile.name,
+        })
+        .eq('id', newCand._dbId);
+      if (updErr) throw updErr;
+      // Reflect in-memory so the UI updates without refresh
+      newCand.cvStoragePath = storagePath;
+      newCand.cvUploadedAt = new Date().toISOString();
+      render();
+    } catch (e) {
+      console.error('CV upload failed:', e);
+      toast('Candidate saved, but CV upload failed: ' + (e.message || e), true);
+    }
+  }
 }
 
 async function moveCandidate(candId, toStage) {
@@ -5012,7 +5085,7 @@ Object.assign(window, {
   addCandidate, submitCandidate, moveCandidate, rejectCandidate, scheduleInterview,
   submitInterview, addFeedback, submitFeedback, updateChecks, saveChecks,
   prepareOffer, sendOffer, offerResponse, closeModal,
-  viewJD
+  viewJD, viewCV
 });
 </script>
 </body>
