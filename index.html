@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-22-v16 role dropdown disambiguates variants by title/function/grade -->
+<!-- build: 2026-04-22-v17 JD upload to Supabase Storage + signed-URL view -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v16';
+const HWM_BUILD = '2026-04-22-v17';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1388,6 +1388,7 @@ const TRANSLATIONS = {
     btn_close_req: 'Close requisition', btn_close_req_short: 'Close req',
     btn_assign: 'Assign & start sourcing', btn_save_reassign: 'Save reassignment',
     btn_reassign: 'Reassign',
+    btn_view_jd: 'View JD',
     btn_add_cand: 'Add candidate', btn_schedule: 'Schedule',
     btn_screen: 'Screen', btn_interview: 'Interview', btn_pre_emp: 'Pre-emp',
     btn_offer: 'Offer', btn_feedback: 'Feedback', btn_checks: 'Checks',
@@ -1580,6 +1581,7 @@ const TRANSLATIONS = {
     btn_close_req: 'បិទសំណើ', btn_close_req_short: 'បិទ',
     btn_assign: 'ចាត់តាំង និងចាប់ផ្តើម', btn_save_reassign: 'រក្សាទុកការចាត់តាំង',
     btn_reassign: 'ចាត់តាំងម្តងទៀត',
+    btn_view_jd: 'មើលឯកសារការងារ',
     btn_add_cand: 'បន្ថែមបេក្ខជន', btn_schedule: 'កំណត់ពេល',
     btn_screen: 'ពិនិត្យ', btn_interview: 'សម្ភាសន៍', btn_pre_emp: 'ពិនិត្យមុន',
     btn_offer: 'ផ្តល់ជូន', btn_feedback: 'មតិ', btn_checks: 'ការពិនិត្យ',
@@ -1791,6 +1793,8 @@ function reqFromDb(row) {
     realSupervisorId: row._supervisor_real || null,
     realHiringManagerId: row._hm_real || null,
     jdFilename: row.jd_filename,
+    jdStoragePath: row.jd_storage_path,
+    jdUploadedAt: row.jd_uploaded_at,
     status: row.workflow_status,
     approvalPath: row.approval_path || 'standard',
     submittedAt: row.submitted_at,
@@ -3067,6 +3071,25 @@ function checkUnplanned() {
   document.getElementById('unplannedWarning').classList.toggle('hidden', !(rep && plan && rep.value === 'no' && plan.value === 'no'));
 }
 
+// ⭐ Fetch a short-lived signed URL for a JD and open it in a new tab.
+// The URL expires in 1 hour so even if copied/shared, exposure is time-limited.
+async function viewJD(reqDbId) {
+  if (!reqDbId) { toast('JD unavailable (legacy req)', true); return; }
+  const req = requisitions.find(r => r._dbId === reqDbId);
+  if (!req || !req.jdStoragePath) { toast('JD not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(req.jdStoragePath, 3600);  // 1 hour TTL
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewJD failed:', e);
+    toast('Could not open JD: ' + (e.message || e), true);
+  }
+}
+
 async function submitNewReq() {
   const roleSelect = document.getElementById('roleSelect').value;
   if (!roleSelect) { alert('Please select a role'); return; }
@@ -3139,6 +3162,43 @@ async function submitNewReq() {
     alert('Failed to submit: ' + (e.message || e));
     return;
   }
+
+  // ⭐ Upload the JD PDF to Supabase Storage under:
+  //   jds/{tenant_id}/{req_dbId}/{timestamp}-{sanitized_filename}
+  // If upload fails, the req still exists — we log a clear warning so the user
+  // can retry later. We don't roll back the req because partial save is better
+  // than losing the approval-chain data.
+  if (newReq._dbId && currentMember?.tenant_id) {
+    try {
+      const ts = Date.now();
+      const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `jds/${currentMember.tenant_id}/${newReq._dbId}/${ts}-${safeName}`;
+      const { error: upErr } = await sb.storage
+        .from('hire-medha')
+        .upload(storagePath, jdFile, {
+          contentType: 'application/pdf',
+          upsert: false,
+        });
+      if (upErr) throw upErr;
+      // Save the path on the requisition row
+      const { error: updErr } = await sb
+        .from('requisitions')
+        .update({
+          jd_storage_path: storagePath,
+          jd_uploaded_at: new Date().toISOString(),
+          jd_filename: jdFile.name,
+        })
+        .eq('id', newReq._dbId);
+      if (updErr) throw updErr;
+      // Update the in-memory object so the UI reflects it without refresh
+      newReq.jdStoragePath = storagePath;
+      newReq.jdUploadedAt = new Date().toISOString();
+    } catch (e) {
+      console.error('JD upload failed:', e);
+      toast('Requisition saved, but JD upload failed: ' + (e.message || e), true);
+    }
+  }
+
   logActivity(newReq.id, 'Requisition submitted');
   await saveData('activities', activities);  // persist the activity row now that _dbId exists
   alert(`Requisition ${newReq.id} submitted.${isUnplanned ? '\n\nNote: Requires CEO approval.' : ''}`);
@@ -3223,8 +3283,12 @@ function renderRequesterDetail(reqId) {
             <div class="panel-body">
               <div class="jd-viewer">
                 <div style="color: var(--ink-4);">${ICONS.doc}</div>
-                <div class="jd-filename">${r.jdFilename}</div>
-                <div class="jd-note">PDF viewer renders inline in production</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${r._dbId}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
               </div>
             </div>
           </div>
@@ -3512,8 +3576,12 @@ function renderHRBPDetail(reqId) {
             <div class="panel-body">
               <div class="jd-viewer">
                 <div style="color: var(--ink-4);">${ICONS.doc}</div>
-                <div class="jd-filename">${r.jdFilename}</div>
-                <div class="jd-note">PDF viewer renders inline in production</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${r._dbId}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
               </div>
             </div>
           </div>
@@ -3849,8 +3917,12 @@ function renderFHDetail(reqId) {
             <div class="panel-body">
               <div class="jd-viewer">
                 <div style="color: var(--ink-4);">${ICONS.doc}</div>
-                <div class="jd-filename">${r.jdFilename}</div>
-                <div class="jd-note">PDF viewer renders inline in production</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${r._dbId}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
               </div>
             </div>
           </div>
@@ -4000,8 +4072,12 @@ function renderCEODetail(reqId) {
             <div class="panel-body">
               <div class="jd-viewer">
                 <div style="color: var(--ink-4);">${ICONS.doc}</div>
-                <div class="jd-filename">${r.jdFilename}</div>
-                <div class="jd-note">PDF viewer renders inline in production</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${r._dbId}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
               </div>
             </div>
           </div>
@@ -4800,7 +4876,8 @@ Object.assign(window, {
   openCancelModal, submitCancel, approveFH, approveCEO, assignRecruiters,
   addCandidate, submitCandidate, moveCandidate, rejectCandidate, scheduleInterview,
   submitInterview, addFeedback, submitFeedback, updateChecks, saveChecks,
-  prepareOffer, sendOffer, offerResponse, closeModal
+  prepareOffer, sendOffer, offerResponse, closeModal,
+  viewJD
 });
 </script>
 </body>
