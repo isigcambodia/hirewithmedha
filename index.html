@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-22-v10 CRITICAL fix reqToDb stop overwriting requester on UPDATE -->
+<!-- build: 2026-04-22-v11 requester dashboard shows rejected reqs with reason inline -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v10';
+const HWM_BUILD = '2026-04-22-v11';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1412,6 +1412,8 @@ const TRANSLATIONS = {
     // Sections
     sec_active_reqs: 'Active requisitions', sec_closed_reqs: 'Closed requisitions',
     sec_on_hold_cancelled: 'On hold & cancelled',
+    sec_rejected_reqs: 'Rejected requisitions',
+    th_reason: 'Reason',
     sec_req_details: 'Requisition details', sec_justification: 'Justification',
     sec_jd: 'Job description', sec_pipeline_summary: 'Pipeline summary',
     sec_activity: 'Activity', sec_assigned_rec: 'Assigned recruiter',
@@ -1599,6 +1601,8 @@ const TRANSLATIONS = {
     tab_active_reqs: 'សំណើសកម្ម', tab_workload: 'បន្ទុកការងារក្រុម',
     sec_active_reqs: 'សំណើសកម្ម', sec_closed_reqs: 'សំណើបានបិទ',
     sec_on_hold_cancelled: 'ផ្អាក និងបោះបង់',
+    sec_rejected_reqs: 'សំណើត្រូវបានបដិសេធ',
+    th_reason: 'មូលហេតុ',
     sec_req_details: 'ព័ត៌មានលម្អិតសំណើ', sec_justification: 'ហេតុផល',
     sec_jd: 'ការពិពណ៌នាការងារ', sec_pipeline_summary: 'សង្ខេបបណ្តុំ',
     sec_activity: 'សកម្មភាព', sec_assigned_rec: 'អ្នកជ្រើសរើសដែលបានចាត់តាំង',
@@ -2654,6 +2658,7 @@ function renderRequester() {
   const onHold = myReqs.filter(r => r.status === 'on_hold');
   const cancelled = myReqs.filter(r => r.status === 'cancelled');
   const closed = myReqs.filter(r => r.status === 'closed');
+  const rejected = myReqs.filter(r => r.status === 'rejected');
   const onHoldOrCancelled = [...onHold, ...cancelled];
   
   main.innerHTML = `
@@ -2732,6 +2737,28 @@ function renderRequester() {
         </div>
       ` : ''}
       
+      ${rejected.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('sec_rejected_reqs')}</div>
+            <span class="text-xs text-muted">${rejected.length} ${t('txt_total')}</span>
+          </div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_status')}</th><th>${t('th_reason')}</th></tr></thead>
+              <tbody>${rejected.map(r => `
+                <tr class="clickable" onclick="viewReq('${r.id}')">
+                  <td><span class="req-id">${r.id}</span></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td>${statusBadge(r.status)}</td>
+                  <td><span class="text-sm text-muted">${r.rejectionReason ? (r.rejectionReason.length > 120 ? r.rejectionReason.substring(0, 120) + '…' : r.rejectionReason) : '—'}</span></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+
       ${closed.length > 0 ? `
         <div class="panel">
           <div class="panel-header"><div class="panel-title">${t('sec_closed_reqs')}</div></div>
