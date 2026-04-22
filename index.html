@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hire with Medhā</title>
-<!-- build: 2026-04-22-v17 JD upload to Supabase Storage + signed-URL view -->
+<!-- build: 2026-04-22-v18 real org structure from DB; Sub-function→Department, Unit→Section, section optional -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1242,7 +1242,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v17';
+const HWM_BUILD = '2026-04-22-v18';
 console.log('%cHire with Medhā', 'color:#00338d;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1427,7 +1427,7 @@ const TRANSLATIONS = {
     sec_organization: 'Organization', sec_req_type: 'Requisition type',
     sec_reporting: 'Reporting structure', sec_prev_feedback: 'Previous feedback',
     // Form labels
-    lbl_function: 'Function', lbl_subfunction: 'Sub-function', lbl_unit: 'Unit',
+    lbl_function: 'Function', lbl_subfunction: 'Department', lbl_unit: 'Section',
     lbl_new_role_title: 'New role title', lbl_proposed_grade: 'Proposed grade',
     lbl_jd: 'Job description', lbl_replacement: 'Replacement?',
     lbl_planned: 'Planned headcount?', lbl_justification: 'Justification',
@@ -1443,8 +1443,8 @@ const TRANSLATIONS = {
     lbl_hold_reason: 'Reason for putting on hold',
     lbl_cancel_reason: 'Reason for cancelling',
     // Placeholders
-    ph_select_fn: 'Select function…', ph_select_sub: 'Select sub-function…',
-    ph_select_unit: 'Select unit…', ph_select_role: 'Select existing role…',
+    ph_select_fn: 'Select function…', ph_select_sub: 'Select department…',
+    ph_select_unit: 'Select section…', ph_select_role: 'Select existing role…',
     ph_new_role: '+ Create new role', ph_select_grade: 'Select grade…',
     ph_new_role_ex: 'e.g., AI/ML Specialist',
     ph_just: 'Explain why this role is needed, what problem it solves, and the impact on your team or the business…',
@@ -1616,7 +1616,7 @@ const TRANSLATIONS = {
     sec_candidate_pipeline: 'បណ្តុំបេក្ខជន', sec_my_reqs: 'សំណើរបស់ខ្ញុំ',
     sec_organization: 'អង្គការ', sec_req_type: 'ប្រភេទសំណើ',
     sec_reporting: 'រចនាសម្ព័ន្ធរាយការណ៍', sec_prev_feedback: 'មតិមុន',
-    lbl_function: 'ផ្នែក', lbl_subfunction: 'ផ្នែករង', lbl_unit: 'អង្គភាព',
+    lbl_function: 'ផ្នែក', lbl_subfunction: 'នាយកដ្ឋាន', lbl_unit: 'ផ្នែករង',
     lbl_new_role_title: 'ចំណងជើងមុខតំណែងថ្មី', lbl_proposed_grade: 'ថ្នាក់ដែលស្នើ',
     lbl_jd: 'ការពិពណ៌នាការងារ', lbl_replacement: 'ជំនួស?',
     lbl_planned: 'ចំនួនបុគ្គលិកបានគ្រោងទុក?', lbl_justification: 'ហេតុផល',
@@ -1631,8 +1631,8 @@ const TRANSLATIONS = {
     lbl_rev_notes: 'អ្វីដែលត្រូវកែសម្រួល?', lbl_reject_reason: 'មូលហេតុបដិសេធ',
     lbl_hold_reason: 'មូលហេតុសម្រាប់ការផ្អាក',
     lbl_cancel_reason: 'មូលហេតុសម្រាប់ការបោះបង់',
-    ph_select_fn: 'ជ្រើសរើសផ្នែក…', ph_select_sub: 'ជ្រើសរើសផ្នែករង…',
-    ph_select_unit: 'ជ្រើសរើសអង្គភាព…', ph_select_role: 'ជ្រើសរើសមុខតំណែងដែលមាន…',
+    ph_select_fn: 'ជ្រើសរើសផ្នែក…', ph_select_sub: 'ជ្រើសរើសនាយកដ្ឋាន…',
+    ph_select_unit: 'ជ្រើសរើសផ្នែករង…', ph_select_role: 'ជ្រើសរើសមុខតំណែងដែលមាន…',
     ph_new_role: '+ បង្កើតមុខតំណែងថ្មី', ph_select_grade: 'ជ្រើសរើសថ្នាក់…',
     ph_new_role_ex: 'ឧ. អ្នកឯកទេស AI/ML',
     ph_just: 'ពន្យល់មូលហេតុដែលត្រូវការមុខតំណែងនេះ បញ្ហាដែលវាដោះស្រាយ និងផលប៉ះពាល់លើក្រុមឬអាជីវកម្ម…',
@@ -1981,6 +1981,36 @@ async function loadEverything() {
     deptMaps.byId[d.id] = d;
     deptMaps.byName[`${d.level}:${d.name}`] = d;
   });
+
+  // ⭐ Build REAL_ORG_STRUCTURE from DB, overwriting the hardcoded ORG_STRUCTURE.
+  // Walks the parent_id tree: function → sub_function → unit
+  // Shape: { 'Commercial': { 'Key Account': ['...sections...'], 'Marketing': [] }, ... }
+  const allDepts = deptsRes.data || [];
+  const fns = allDepts.filter(d => d.level === 'function');
+  const sfs = allDepts.filter(d => d.level === 'sub_function');
+  const uns = allDepts.filter(d => d.level === 'unit');
+  const newOrg = {};
+  fns.forEach(fn => {
+    newOrg[fn.name] = {};
+    sfs.filter(sf => sf.parent_id === fn.id).forEach(sf => {
+      newOrg[fn.name][sf.name] = uns
+        .filter(un => un.parent_id === sf.id)
+        .map(un => un.name)
+        .sort();
+    });
+  });
+  // Sort function names and dept names alphabetically for consistent UI
+  const sortedOrg = {};
+  Object.keys(newOrg).sort().forEach(fn => {
+    sortedOrg[fn] = {};
+    Object.keys(newOrg[fn]).sort().forEach(sf => {
+      sortedOrg[fn][sf] = newOrg[fn][sf];
+    });
+  });
+  // Replace ORG_STRUCTURE contents in-place (keep reference)
+  Object.keys(ORG_STRUCTURE).forEach(k => delete ORG_STRUCTURE[k]);
+  Object.assign(ORG_STRUCTURE, sortedOrg);
+  console.log('[hwm] ORG_STRUCTURE rebuilt from DB:', Object.keys(ORG_STRUCTURE).length, 'functions');
 
   // Build role library maps
   roleLibMaps = { byTitle: {}, byId: {}, byLegacyId: {} };
@@ -2890,8 +2920,8 @@ function renderNewReqForm() {
               </select>
             </div>
             <div class="form-group">
-              <label class="required">${t('lbl_unit')}</label>
-              <select id="unit" required disabled>
+              <label>${t('lbl_unit')}</label>
+              <select id="unit" disabled>
                 <option value="">${t('ph_select_unit')}</option>
               </select>
             </div>
@@ -3031,20 +3061,23 @@ function renderNewReqForm() {
 function updateSubFunctions() {
   const fn = document.getElementById('function').value;
   const sub = document.getElementById('subFunction');
-  sub.innerHTML = '<option value="">Select sub-function…</option>';
+  sub.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
   sub.disabled = !fn;
-  if (fn) Object.keys(ORG_STRUCTURE[fn]).forEach(s => sub.innerHTML += `<option value="${s}">${s}</option>`);
+  if (fn && ORG_STRUCTURE[fn]) Object.keys(ORG_STRUCTURE[fn]).forEach(s => sub.innerHTML += `<option value="${s}">${s}</option>`);
   const unit = document.getElementById('unit');
-  unit.innerHTML = '<option value="">Select sub-function first…</option>';
+  unit.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
   unit.disabled = true;
 }
 function updateUnits() {
   const fn = document.getElementById('function').value;
   const sub = document.getElementById('subFunction').value;
   const unit = document.getElementById('unit');
-  unit.innerHTML = '<option value="">Select unit…</option>';
-  unit.disabled = !sub;
-  if (fn && sub) ORG_STRUCTURE[fn][sub].forEach(u => unit.innerHTML += `<option value="${u}">${u}</option>`);
+  unit.innerHTML = `<option value="">${t('ph_select_unit')}</option>`;
+  const sections = (fn && sub && ORG_STRUCTURE[fn]?.[sub]) || [];
+  // Sections are optional and only exist for a few departments; disable the
+  // dropdown when none are defined so the requester knows it's intentionally empty.
+  unit.disabled = sections.length === 0;
+  sections.forEach(u => unit.innerHTML += `<option value="${u}">${u}</option>`);
 }
 function toggleNewRole() { document.getElementById('newRoleFields').classList.toggle('hidden', document.getElementById('roleSelect').value !== 'NEW'); }
 function toggleHMField() { document.getElementById('hmField').classList.toggle('hidden', document.querySelector('input[name="sameHM"]:checked').value === 'yes'); }
@@ -3236,7 +3269,7 @@ function renderRequesterDetail(reqId) {
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
           ${r.isNewRole ? `<span class="badge badge-info"><span class="badge-dot"></span>${t('st_new_role')}</span>` : ''}
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -3256,7 +3289,7 @@ function renderRequesterDetail(reqId) {
               <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_function')}</span><span class="detail-value">${r.function}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_subfunction')}</span><span class="detail-value">${r.subFunction}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('lbl_unit')}</span><span class="detail-value">${r.unit}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_unit')}</span><span class="detail-value">${r.unit || '—'}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_replacement')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_planned')}</span><span class="detail-value">${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getUserName(r.immediateSupervisorId)}</span></div>
@@ -3530,7 +3563,7 @@ function renderHRBPDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -3870,7 +3903,7 @@ function renderFHDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -4028,7 +4061,7 @@ function renderCEODetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           <span class="badge badge-ceo">${t('st_unplanned')}</span>
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -4229,7 +4262,7 @@ function renderTADetail(reqId) {
         <h1>${isReassign ? t('btn_reassign') : t('btn_assign').split(' ')[0]}: ${r.roleTitle}</h1>
         <div class="detail-meta">
           ${statusBadge(r.status)}
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -4443,7 +4476,7 @@ function renderRecruiterDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           <span class="badge badge-neutral">${r.grade}</span>
-          <span class="text-xs text-muted">${r.function} · ${r.subFunction} · ${r.unit}</span>
+          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
