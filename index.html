@@ -4236,7 +4236,7 @@ function renderHeadTA() {
       <div class="tabs">
         <button class="tab active" onclick="switchTab('pending_assignment', event)">${t('tab_pending_assign')} <span class="tab-count">${pending.length}</span></button>
         <button class="tab" onclick="switchTab('active_reqs', event)">${t('tab_active_reqs')} <span class="tab-count">${active.length}</span></button>
-        <button class="tab" onclick="switchTab('all_reqs', event)">${t('tab_all_reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
+        <button class="tab" onclick="switchTab('all_reqs', event)">${t('All reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
         <button class="tab" onclick="switchTab('workload', event)">${t('tab_workload')}</button>
       </div>
       
@@ -4282,7 +4282,7 @@ function renderHeadTA() {
       <div id="tab-all_reqs" class="tab-content hidden">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">${t('sec_all_reqs_title') || 'All requisitions — end-to-end'}</div>
+            <div class="panel-title">${t('All Reqs x Status') || 'All requisitions — end-to-end'}</div>
             <span class="text-xs text-muted">${allReqs.length} ${t('metric_total_reqs') || 'total'}</span>
           </div>
           ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No requisitions yet'}</div></div>` : `
