@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ISI Group Talent</title>
-<!-- build: 2026-04-22-v25 Recruiter now sees Closed reqs section + History (sorted by close date) -->
+<!-- build: 2026-04-22-v26 Head of TA: end-to-end 'All reqs' tab + richer per-recruiter workload metrics -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1271,7 +1271,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v25';
+const HWM_BUILD = '2026-04-22-v26';
 console.log('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -4192,9 +4192,28 @@ function renderHeadTA() {
   
   const pending = requisitions.filter(r => r.status === 'ta_assignment');
   const active = requisitions.filter(r => r.status === 'active_sourcing');
+  // All reqs in the tenant — used for end-to-end visibility (Head of TA sees everything)
+  const allReqs = requisitions.slice().sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
   // Real recruiters from the tenant (from tenant_members + profiles).
   const recruiters = Object.values(realUsersByUuid).filter(u => u.role === 'recruiter');
-  const workload = recruiters.map(rec => ({ ...rec, openReqs: requisitions.filter(r => r.status === 'active_sourcing' && r.assignedRecruiters.includes(rec.id)).length }));
+  // Richer per-recruiter performance metrics: active reqs, total candidates in pipeline,
+  // interviews currently scheduled, offers out, and lifetime closed count.
+  const workload = recruiters.map(rec => {
+    const assigned = requisitions.filter(r => r.assignedRecruiters.includes(rec.id));
+    const activeOnes = assigned.filter(r => r.status === 'active_sourcing');
+    const closedOnes = assigned.filter(r => r.status === 'closed');
+    const heldOnes   = assigned.filter(r => r.status === 'on_hold');
+    const pipelineCands = candidates.filter(c => activeOnes.some(r => r.id === c.reqId) && c.status === 'active');
+    return {
+      ...rec,
+      openReqs:   activeOnes.length,
+      heldReqs:   heldOnes.length,
+      closedReqs: closedOnes.length,
+      candidates: pipelineCands.length,
+      interviews: pipelineCands.filter(c => c.stage === 'interview').length,
+      offers:     pipelineCands.filter(c => c.stage === 'offer').length,
+    };
+  });
   const breaches = pending.filter(r => daysSince(getStageDate(r)) > 2).length;
   
   main.innerHTML = `
@@ -4217,6 +4236,7 @@ function renderHeadTA() {
       <div class="tabs">
         <button class="tab active" onclick="switchTab('pending_assignment', event)">${t('tab_pending_assign')} <span class="tab-count">${pending.length}</span></button>
         <button class="tab" onclick="switchTab('active_reqs', event)">${t('tab_active_reqs')} <span class="tab-count">${active.length}</span></button>
+        <button class="tab" onclick="switchTab('all_reqs', event)">${t('tab_all_reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
         <button class="tab" onclick="switchTab('workload', event)">${t('tab_workload')}</button>
       </div>
       
@@ -4259,21 +4279,70 @@ function renderHeadTA() {
         </div>
       </div>
       
+      <div id="tab-all_reqs" class="tab-content hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('sec_all_reqs_title') || 'All requisitions — end-to-end'}</div>
+            <span class="text-xs text-muted">${allReqs.length} ${t('metric_total_reqs') || 'total'}</span>
+          </div>
+          ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No requisitions yet'}</div></div>` : `
+            <div class="panel-body no-pad">
+              <table class="table">
+                <thead><tr>
+                  <th>${t('th_req_id')}</th>
+                  <th>${t('th_role')}</th>
+                  <th>${t('th_requester')}</th>
+                  <th>${t('th_status')}</th>
+                  <th>${t('th_current_stage') || 'Currently with'}</th>
+                  <th>${t('th_submitted') || 'Submitted'}</th>
+                </tr></thead>
+                <tbody>${allReqs.map(r => `
+                  <tr class="clickable" onclick="viewReq('${r.id}')">
+                    <td><span class="req-id">${r.id}</span></td>
+                    <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function || ''} · ${r.grade}</div></td>
+                    <td>${getUserName(r.requesterId)}</td>
+                    <td>${statusBadge(r.status)}</td>
+                    <td>${getCurrentOwner(r)}</td>
+                    <td>${formatDate(r.submittedAt)}</td>
+                  </tr>
+                `).join('')}</tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      </div>
+      
       <div id="tab-workload" class="tab-content hidden">
         <div class="panel">
-          <div class="panel-header"><div class="panel-title">${t('sec_workload_sorted')}</div></div>
-          <div class="panel-body">
-            <div class="workload-list">
-              ${workload.sort((a,b) => a.openReqs - b.openReqs).map(w => `
-                <div class="workload-row">
-                  <div class="workload-left">
-                    <div class="user-avatar" style="width: 32px; height: 32px; font-size: 0.75rem;">${getUserInitials(w.id)}</div>
-                    <span class="workload-name">${w.name}</span>
-                  </div>
-                  <span class="workload-count">${w.openReqs} ${t('metric_active_reqs').toLowerCase()}</span>
-                </div>
-              `).join('')}
-            </div>
+          <div class="panel-header"><div class="panel-title">${t('sec_workload_perf') || 'Team workload & performance'}</div></div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr>
+                <th>${t('th_recruiter') || 'Recruiter'}</th>
+                <th style="text-align: center;">${t('metric_active_reqs')}</th>
+                <th style="text-align: center;">${t('metric_candidates')}</th>
+                <th style="text-align: center;">${t('metric_interviews')}</th>
+                <th style="text-align: center;">${t('metric_offers_out')}</th>
+                <th style="text-align: center;">${t('metric_on_hold')}</th>
+                <th style="text-align: center;">${t('metric_closed') || 'Closed'}</th>
+              </tr></thead>
+              <tbody>${workload.sort((a,b) => a.openReqs - b.openReqs).map(w => `
+                <tr>
+                  <td>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                      <div class="user-avatar" style="width: 32px; height: 32px; font-size: 0.75rem;">${getUserInitials(w.id)}</div>
+                      <span style="font-weight: 500;">${w.name}</span>
+                    </div>
+                  </td>
+                  <td style="text-align: center; font-weight: 500;">${w.openReqs}</td>
+                  <td style="text-align: center;">${w.candidates}</td>
+                  <td style="text-align: center;">${w.interviews}</td>
+                  <td style="text-align: center;">${w.offers}</td>
+                  <td style="text-align: center; color: var(--ink-3);">${w.heldReqs}</td>
+                  <td style="text-align: center; color: var(--ink-3);">${w.closedReqs}</td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
           </div>
         </div>
       </div>
