@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ISI Group Talent</title>
-<!-- build: 2026-04-22-v26 Head of TA: end-to-end 'All reqs' tab + richer per-recruiter workload metrics -->
+<!-- build: 2026-04-22-v28 JD Library Phase 2: admin/head_ta page to upload, view, replace, remove standard JDs -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1146,6 +1146,7 @@ details.collapsible > *:not(summary) { margin-top: 1rem; }
       </div>
       <span class="dev-badge">Dev Mode</span>
       <div class="role-switcher" id="roleSwitcher"></div>
+      <div id="adminNav" style="display: none;"></div>
       <div class="user-chip" id="userChip"></div>
     </div>
   </div>
@@ -1271,7 +1272,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v26';
+const HWM_BUILD = '2026-04-22-v28';
 console.log('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -2591,6 +2592,25 @@ function renderHeader() {
     switcherEl.innerHTML = `<span class="role-btn active" style="cursor: default; opacity: 0.85;">${ROLES_LABELS[currentRole] || currentRole}</span>`;
   }
 
+  // ⭐ JD Library nav button — admin + head_ta only.
+  // Sits next to the role switcher; toggles between dashboard and library views.
+  const adminNav = document.getElementById('adminNav');
+  if (adminNav) {
+    const canAccessLibrary = isAdmin || currentMember?.role === 'head_ta';
+    if (canAccessLibrary) {
+      adminNav.style.display = '';
+      const onLibrary = currentView === 'jd_library';
+      adminNav.innerHTML = `
+        <button class="role-btn ${onLibrary ? 'active' : ''}" onclick="setView('${onLibrary ? 'dashboard' : 'jd_library'}')" style="margin-left: 0.5rem;">
+          ${onLibrary ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_jd_library') || 'JD Library')}
+        </button>
+      `;
+    } else {
+      adminNav.style.display = 'none';
+      adminNav.innerHTML = '';
+    }
+  }
+
   // ⭐ User chip now shows the REAL logged-in user's name, not the hardcoded USERS[0].
   // Falls back to email if full_name isn't set on their profile.
   // When an admin previews another role via the switcher, we still show the admin's
@@ -2937,10 +2957,14 @@ function renderNewReqForm() {
             </div>
           </div>
           
-          <div class="form-group">
+          <div class="form-group" id="jdBlock">
             <label class="required">${t('lbl_jd')}</label>
-            <input type="file" id="jdFile" accept=".pdf" required>
-            <div class="form-hint">${t('hint_jd')}</div>
+            <!-- Rendered dynamically by toggleNewRole() based on whether the
+                 selected role has a standard JD in the library. -->
+            <div id="jdSlot">
+              <input type="file" id="jdFile" accept=".pdf">
+              <div class="form-hint">${t('hint_jd')}</div>
+            </div>
           </div>
         </div>
         
@@ -3063,7 +3087,66 @@ function updateUnits() {
   unit.disabled = sections.length === 0;
   sections.forEach(u => unit.innerHTML += `<option value="${u}">${u}</option>`);
 }
-function toggleNewRole() { document.getElementById('newRoleFields').classList.toggle('hidden', document.getElementById('roleSelect').value !== 'NEW'); }
+function toggleNewRole() {
+  const roleSelect = document.getElementById('roleSelect').value;
+  document.getElementById('newRoleFields').classList.toggle('hidden', roleSelect !== 'NEW');
+  renderJDSlot(roleSelect);
+}
+
+// Render the JD section in the new-req form. If the selected role has a
+// standard JD in the library, show a "Attached from library" notice with a
+// View button (preview before submit). Otherwise show the manual upload input.
+function renderJDSlot(roleSelectValue) {
+  const slot = document.getElementById('jdSlot');
+  if (!slot) return;
+  // No role selected yet, or user is creating a NEW role: standard JD doesn't
+  // exist, so show the manual upload as today.
+  if (!roleSelectValue || roleSelectValue === 'NEW') {
+    slot.innerHTML = `
+      <input type="file" id="jdFile" accept=".pdf">
+      <div class="form-hint">${t('hint_jd')}</div>
+    `;
+    return;
+  }
+  const role = roleLibMaps.byLegacyId[roleSelectValue];
+  if (role && role.standard_jd_path) {
+    // Standard JD available — auto-attach, no upload input. Requester sees a
+    // "from library" indicator and can click View to preview before submitting.
+    slot.innerHTML = `
+      <div class="jd-viewer" style="padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
+        <div style="color: var(--success);">${ICONS.doc || '📄'}</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 500;">${t('jd_from_library') || 'Standard JD attached from library'}</div>
+          <div class="text-xs text-muted">${role.standard_jd_filename || 'Standard JD.pdf'}</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="viewLibraryJD('${role.id}')">${t('btn_view_jd') || 'View JD'}</button>
+      </div>
+    `;
+  } else {
+    // No standard JD for this role yet — fall back to manual upload.
+    slot.innerHTML = `
+      <input type="file" id="jdFile" accept=".pdf">
+      <div class="form-hint">${t('hint_jd')}</div>
+    `;
+  }
+}
+
+// Open a library-owned standard JD via signed URL (preview before submit).
+async function viewLibraryJD(roleLibraryId) {
+  const role = roleLibMaps.byId[roleLibraryId];
+  if (!role || !role.standard_jd_path) { toast('Standard JD not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(role.standard_jd_path, 3600);
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewLibraryJD failed:', e);
+    toast('Could not open standard JD: ' + (e.message || e), true);
+  }
+}
 function toggleHMField() { document.getElementById('hmField').classList.toggle('hidden', document.querySelector('input[name="sameHM"]:checked').value === 'yes'); }
 function onResourceChange() {
   const noneBox = document.getElementById('resNone');
@@ -3139,9 +3222,18 @@ async function submitNewReq() {
   const isRep = document.querySelector('input[name="isReplacement"]:checked');
   const isPlan = document.querySelector('input[name="isPlanned"]:checked');
   if (!isRep || !isPlan) { alert('Please answer replacement and planned headcount'); return; }
-  const jdFile = document.getElementById('jdFile').files[0];
-  if (!jdFile) { alert('Please upload JD'); return; }
-  if (jdFile.type !== 'application/pdf') { alert('JD must be PDF'); return; }
+
+  // ⭐ JD handling: if the selected role has a standard JD in the library,
+  // the requester doesn't need to (and can't) upload one — we auto-attach
+  // the library path. Otherwise, the file input is present and required.
+  const selectedRoleLib = (roleSelect && roleSelect !== 'NEW') ? roleLibMaps.byLegacyId[roleSelect] : null;
+  const useLibraryJD = !!(selectedRoleLib && selectedRoleLib.standard_jd_path);
+  const jdFileEl = document.getElementById('jdFile');
+  const jdFile = jdFileEl ? jdFileEl.files[0] : null;
+  if (!useLibraryJD) {
+    if (!jdFile) { alert('Please upload JD'); return; }
+    if (jdFile.type !== 'application/pdf') { alert('JD must be PDF'); return; }
+  }
   
   let roleTitle, grade, isNewRole, roleId;
   if (roleSelect === 'NEW') {
@@ -3217,7 +3309,8 @@ async function submitNewReq() {
     hrbpJustification: null, fhJustification: null, ceoJustification: null,
     immediateSupervisorId: supId, hiringManagerId: hmId, requesterId: currentUserId,
     supervisorEmpId: supEmpId, hmEmpId: hmEmpId,
-    jdFilename: jdFile.name, status: 'hrbp_review',
+    jdFilename: useLibraryJD ? (selectedRoleLib.standard_jd_filename || 'Standard JD.pdf') : jdFile.name,
+    status: 'hrbp_review',
     approvalPath: isUnplanned ? 'ceo_required' : 'standard',
     submittedAt: new Date().toISOString(),
     hrbpApprovedAt: null, fhApprovedAt: null, ceoApprovedAt: null,
@@ -3235,39 +3328,56 @@ async function submitNewReq() {
     return;
   }
 
-  // ⭐ Upload the JD PDF to Supabase Storage under:
-  //   jds/{tenant_id}/{req_dbId}/{timestamp}-{sanitized_filename}
-  // If upload fails, the req still exists — we log a clear warning so the user
-  // can retry later. We don't roll back the req because partial save is better
-  // than losing the approval-chain data.
+  // ⭐ JD persistence: two code paths, both produce a req-owned storage object.
+  //   (A) LIBRARY PATH: role has a standard JD. Download the library PDF and
+  //       re-upload it into the req's own folder. This SNAPSHOTS the JD at
+  //       submission time (historical accuracy) — if HR later replaces the
+  //       library version, existing reqs keep their original copy.
+  //   (B) MANUAL UPLOAD: as before — upload the user-selected file.
+  // Both end at the same state: jd_storage_path points to a file the req owns.
   if (newReq._dbId && currentMember?.tenant_id) {
     try {
       const ts = Date.now();
-      const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `jds/${currentMember.tenant_id}/${newReq._dbId}/${ts}-${safeName}`;
+      let storagePath, displayName, uploadBlob, uploadContentType;
+      if (useLibraryJD) {
+        displayName = selectedRoleLib.standard_jd_filename || 'Standard JD.pdf';
+        // Download the library PDF as a Blob via a signed URL
+        const { data: sig, error: sigErr } = await sb.storage
+          .from('hire-medha')
+          .createSignedUrl(selectedRoleLib.standard_jd_path, 60);
+        if (sigErr) throw sigErr;
+        const resp = await fetch(sig.signedUrl);
+        if (!resp.ok) throw new Error('Could not fetch library JD: HTTP ' + resp.status);
+        uploadBlob = await resp.blob();
+        uploadContentType = 'application/pdf';
+        const safeName = displayName.replace(/[^a-zA-Z0-9._-]/g, '_');
+        storagePath = `jds/${currentMember.tenant_id}/${newReq._dbId}/${ts}-lib-${safeName}`;
+      } else {
+        uploadBlob = jdFile;
+        uploadContentType = 'application/pdf';
+        const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        storagePath = `jds/${currentMember.tenant_id}/${newReq._dbId}/${ts}-${safeName}`;
+        displayName = jdFile.name;
+      }
       const { error: upErr } = await sb.storage
         .from('hire-medha')
-        .upload(storagePath, jdFile, {
-          contentType: 'application/pdf',
-          upsert: false,
-        });
+        .upload(storagePath, uploadBlob, { contentType: uploadContentType, upsert: false });
       if (upErr) throw upErr;
-      // Save the path on the requisition row
       const { error: updErr } = await sb
         .from('requisitions')
         .update({
           jd_storage_path: storagePath,
           jd_uploaded_at: new Date().toISOString(),
-          jd_filename: jdFile.name,
+          jd_filename: displayName,
         })
         .eq('id', newReq._dbId);
       if (updErr) throw updErr;
-      // Update the in-memory object so the UI reflects it without refresh
       newReq.jdStoragePath = storagePath;
+      newReq.jdFilename = displayName;
       newReq.jdUploadedAt = new Date().toISOString();
     } catch (e) {
-      console.error('JD upload failed:', e);
-      toast('Requisition saved, but JD upload failed: ' + (e.message || e), true);
+      console.error('JD persist failed:', e);
+      toast('Requisition saved, but JD attach failed: ' + (e.message || e), true);
     }
   }
 
@@ -4236,7 +4346,7 @@ function renderHeadTA() {
       <div class="tabs">
         <button class="tab active" onclick="switchTab('pending_assignment', event)">${t('tab_pending_assign')} <span class="tab-count">${pending.length}</span></button>
         <button class="tab" onclick="switchTab('active_reqs', event)">${t('tab_active_reqs')} <span class="tab-count">${active.length}</span></button>
-        <button class="tab" onclick="switchTab('all_reqs', event)">${t('All reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
+        <button class="tab" onclick="switchTab('all_reqs', event)">${t('tab_all_reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
         <button class="tab" onclick="switchTab('workload', event)">${t('tab_workload')}</button>
       </div>
       
@@ -4282,7 +4392,7 @@ function renderHeadTA() {
       <div id="tab-all_reqs" class="tab-content hidden">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">${t('All Reqs x Status') || 'All requisitions — end-to-end'}</div>
+            <div class="panel-title">${t('sec_all_reqs_title') || 'All requisitions — end-to-end'}</div>
             <span class="text-xs text-muted">${allReqs.length} ${t('metric_total_reqs') || 'total'}</span>
           </div>
           ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No requisitions yet'}</div></div>` : `
@@ -4991,11 +5101,252 @@ async function offerResponse(candId, response) {
 }
 
 // ============================================================
+// JD LIBRARY (Admin / Head of TA)
+// ============================================================
+// State for the JD Library page filters. Lives outside the render function so
+// values persist across re-renders during a session.
+let jdLibFilters = {
+  function: '',     // function name filter (e.g., 'Commercial')
+  status: 'all',    // 'all' | 'has_jd' | 'no_jd'
+  search: '',       // free-text search on role title
+};
+
+function renderJDLibrary() {
+  const main = document.getElementById('mainView');
+  const canAccess = currentMember?.role === 'admin' || currentMember?.role === 'head_ta';
+  if (!canAccess) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'No access'}</div></div>`;
+    return;
+  }
+  // Build the role list. roleLibMaps.byId is the authoritative store of
+  // role_library rows loaded from the DB (incl. standard_jd_path).
+  // The rows have function_id (FK to departments) — we resolve the human-
+  // readable function name through deptMaps.
+  const tenantId = currentMember?.tenant_id || currentTenantId;
+  const allRoles = Object.values(roleLibMaps.byId)
+    .filter(r => !r.tenant_id || r.tenant_id === tenantId)
+    .map(r => ({
+      ...r,
+      _functionName: deptMaps.byId[r.function_id]?.name || '',
+      _subFunctionName: deptMaps.byId[r.sub_function_id]?.name || '',
+    }));
+  // Distinct functions for the filter dropdown
+  const functionsList = [...new Set(allRoles.map(r => r._functionName).filter(Boolean))].sort();
+  // Apply filters
+  const search = jdLibFilters.search.toLowerCase();
+  const filtered = allRoles.filter(r => {
+    if (jdLibFilters.function && r._functionName !== jdLibFilters.function) return false;
+    if (jdLibFilters.status === 'has_jd' && !r.standard_jd_path) return false;
+    if (jdLibFilters.status === 'no_jd' && r.standard_jd_path) return false;
+    if (search && !(r.title || '').toLowerCase().includes(search)) return false;
+    return true;
+  }).sort((a, b) => {
+    return (a._functionName || '').localeCompare(b._functionName || '')
+        || (a.title || '').localeCompare(b.title || '')
+        || (a.grade || '').localeCompare(b.grade || '');
+  });
+  const totalRoles = allRoles.length;
+  const withJD = allRoles.filter(r => r.standard_jd_path).length;
+  const withoutJD = totalRoles - withJD;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_admin') || 'Administration'}</div>
+          <h1>${t('title_jd_library') || 'JD Library'}</h1>
+          <p>${t('sub_jd_library') || 'Manage standard job descriptions for each role. JDs uploaded here will be auto-attached when a requester selects the matching role.'}</p>
+        </div>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_total_roles') || 'Total roles'}</div><div class="metric-value">${totalRoles}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_with_jd') || 'With JD'}</div><div class="metric-value" style="color: var(--success);">${withJD}</div><div class="metric-sub">${Math.round(withJD/totalRoles*100) || 0}% ${t('txt_complete') || 'complete'}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_without_jd') || 'Missing JD'}</div><div class="metric-value" style="color: var(--warning);">${withoutJD}</div><div class="metric-sub">${t('txt_to_upload') || 'to upload'}</div></div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-body" style="display: flex; gap: 1rem; align-items: end; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_search') || 'Search'}</label>
+            <input type="text" id="jdLibSearch" value="${jdLibFilters.search.replace(/"/g, '&quot;')}" placeholder="${t('ph_search_role') || 'Role title…'}" oninput="onJDLibFilterChange()" style="width: 100%;">
+          </div>
+          <div style="min-width: 180px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_function') || 'Function'}</label>
+            <select id="jdLibFunction" onchange="onJDLibFilterChange()" style="width: 100%;">
+              <option value="">${t('opt_all_functions') || 'All functions'}</option>
+              ${functionsList.map(f => `<option value="${f}" ${jdLibFilters.function === f ? 'selected' : ''}>${f}</option>`).join('')}
+            </select>
+          </div>
+          <div style="min-width: 160px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_jd_status') || 'JD status'}</label>
+            <select id="jdLibStatus" onchange="onJDLibFilterChange()" style="width: 100%;">
+              <option value="all" ${jdLibFilters.status === 'all' ? 'selected' : ''}>${t('opt_all') || 'All'}</option>
+              <option value="has_jd" ${jdLibFilters.status === 'has_jd' ? 'selected' : ''}>${t('opt_with_jd') || 'With JD'}</option>
+              <option value="no_jd" ${jdLibFilters.status === 'no_jd' ? 'selected' : ''}>${t('opt_without_jd') || 'Missing JD'}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">${t('sec_roles') || 'Roles'}</div>
+          <span class="text-xs text-muted">${filtered.length} ${t('txt_of') || 'of'} ${totalRoles}</span>
+        </div>
+        <div class="panel-body no-pad">
+          ${filtered.length === 0 ? `
+            <div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_roles_match') || 'No roles match your filters'}</div></div>
+          ` : `
+            <table class="table">
+              <thead><tr>
+                <th>${t('th_function') || 'Function'}</th>
+                <th>${t('th_role') || 'Role'}</th>
+                <th>${t('th_grade') || 'Grade'}</th>
+                <th>${t('th_jd_status') || 'JD status'}</th>
+                <th>${t('th_filename') || 'Filename'}</th>
+                <th style="text-align: right;">${t('th_actions') || 'Actions'}</th>
+              </tr></thead>
+              <tbody>${filtered.map(r => {
+                const has = !!r.standard_jd_path;
+                return `
+                  <tr>
+                    <td><span class="text-xs text-muted">${r._functionName || '—'}</span></td>
+                    <td><div class="role-title">${r.title || '—'}</div>${r._subFunctionName ? `<div class="role-meta">${r._subFunctionName}</div>` : ''}</td>
+                    <td>${r.grade || '—'}</td>
+                    <td>${has ? `<span class="badge badge-success">✓ ${t('st_has_jd') || 'Has JD'}</span>` : `<span class="badge badge-warning">${t('st_no_jd') || 'No JD'}</span>`}</td>
+                    <td><span class="text-xs text-muted">${has ? (r.standard_jd_filename || '—') : '—'}</span></td>
+                    <td style="text-align: right; white-space: nowrap;">
+                      ${has ? `<button class="btn btn-secondary btn-sm" onclick="viewLibraryJD('${r.id}')">${t('btn_view') || 'View'}</button>` : ''}
+                      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('upl-${r.id}').click()">${has ? (t('btn_replace') || 'Replace') : (t('btn_upload') || 'Upload')}</button>
+                      <input type="file" id="upl-${r.id}" accept=".pdf" style="display: none;" onchange="onLibraryJDFileSelected('${r.id}', this)">
+                      ${has ? `<button class="btn btn-secondary btn-sm" onclick="confirmRemoveLibraryJD('${r.id}')" style="color: var(--danger);">${t('btn_remove') || 'Remove'}</button>` : ''}
+                    </td>
+                  </tr>
+                `;
+              }).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Re-render with debounce on the search input. Other filters change instantly.
+let _jdLibFilterTimer = null;
+function onJDLibFilterChange() {
+  const search = document.getElementById('jdLibSearch')?.value || '';
+  const fn = document.getElementById('jdLibFunction')?.value || '';
+  const st = document.getElementById('jdLibStatus')?.value || 'all';
+  const hadFocus = document.activeElement?.id === 'jdLibSearch';
+  jdLibFilters = { function: fn, status: st, search };
+  // Debounce search re-render so we don't lose focus on every keystroke
+  clearTimeout(_jdLibFilterTimer);
+  _jdLibFilterTimer = setTimeout(() => {
+    renderJDLibrary();
+    if (hadFocus) {
+      const el = document.getElementById('jdLibSearch');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    }
+  }, 150);
+}
+
+// File picker callback. Validate, upload to Storage, update role row.
+async function onLibraryJDFileSelected(roleLibraryId, fileInput) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') { alert(t('err_pdf_only') || 'Only PDF files are allowed.'); fileInput.value = ''; return; }
+  if (file.size > 10 * 1024 * 1024) { alert(t('err_too_big') || 'File too large (max 10MB).'); fileInput.value = ''; return; }
+  
+  const role = roleLibMaps.byId[roleLibraryId];
+  if (!role) { toast('Role not found', true); return; }
+  
+  toast(t('msg_uploading') || 'Uploading…');
+  try {
+    const ts = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const tenantId = currentMember?.tenant_id || currentTenantId;
+    const storagePath = `jd-library/${tenantId}/${roleLibraryId}-${ts}-${safeName}`;
+    const { error: upErr } = await sb.storage
+      .from('hire-medha')
+      .upload(storagePath, file, { contentType: 'application/pdf', upsert: false });
+    if (upErr) throw upErr;
+    const { error: updErr } = await sb
+      .from('role_library')
+      .update({
+        standard_jd_path: storagePath,
+        standard_jd_filename: file.name,
+        standard_jd_uploaded_at: new Date().toISOString(),
+        standard_jd_uploaded_by: currentAuthUser?.id || null,
+      })
+      .eq('id', roleLibraryId);
+    if (updErr) throw updErr;
+    // Update in-memory cache so the UI re-renders correctly
+    role.standard_jd_path = storagePath;
+    role.standard_jd_filename = file.name;
+    role.standard_jd_uploaded_at = new Date().toISOString();
+    role.standard_jd_uploaded_by = currentAuthUser?.id || null;
+    fileInput.value = '';
+    toast(t('msg_uploaded') || 'JD uploaded ✓');
+    renderJDLibrary();
+  } catch (e) {
+    console.error('Library JD upload failed:', e);
+    toast('Upload failed: ' + (e.message || e), true);
+    fileInput.value = '';
+  }
+}
+
+// Confirm + remove the JD attachment from a role.
+// NOTE: We only NULL the columns on role_library; we do NOT delete the file
+// from Storage (in case some old req still references that path indirectly,
+// though our snapshot-at-submit design means this is unlikely to matter).
+function confirmRemoveLibraryJD(roleLibraryId) {
+  const role = roleLibMaps.byId[roleLibraryId];
+  if (!role || !role.standard_jd_path) return;
+  if (!confirm((t('confirm_remove_jd') || 'Remove the standard JD for') + ` "${role.title || 'this role'}"?`)) return;
+  removeLibraryJD(roleLibraryId);
+}
+
+async function removeLibraryJD(roleLibraryId) {
+  const role = roleLibMaps.byId[roleLibraryId];
+  if (!role) return;
+  try {
+    const { error } = await sb
+      .from('role_library')
+      .update({
+        standard_jd_path: null,
+        standard_jd_filename: null,
+        standard_jd_uploaded_at: null,
+        standard_jd_uploaded_by: null,
+      })
+      .eq('id', roleLibraryId);
+    if (error) throw error;
+    role.standard_jd_path = null;
+    role.standard_jd_filename = null;
+    role.standard_jd_uploaded_at = null;
+    role.standard_jd_uploaded_by = null;
+    toast(t('msg_removed') || 'JD removed');
+    renderJDLibrary();
+  } catch (e) {
+    console.error('Library JD removal failed:', e);
+    toast('Remove failed: ' + (e.message || e), true);
+  }
+}
+
+// ============================================================
 // DISPATCH
 // ============================================================
-function setView(view) { currentView = view; if (view === 'dashboard') selectedReqId = null; render(); }
+function setView(view) {
+  currentView = view;
+  if (view === 'dashboard') selectedReqId = null;
+  renderHeader();  // refresh nav button active state
+  render();
+}
 function viewReq(id) { selectedReqId = id; currentView = 'req_detail'; render(); }
 function render() {
+  // Top-level views available to specific roles take precedence over the role dashboard.
+  if (currentView === 'jd_library') { renderJDLibrary(); return; }
   if (currentRole === 'requester') renderRequester();
   else if (currentRole === 'hrbp') renderHRBP();
   else if (currentRole === 'function_head') renderFunctionHead();
@@ -5120,7 +5471,9 @@ Object.assign(window, {
   addCandidate, submitCandidate, moveCandidate, rejectCandidate, scheduleInterview,
   submitInterview, addFeedback, submitFeedback, updateChecks, saveChecks,
   prepareOffer, sendOffer, offerResponse, closeModal,
-  viewJD, viewCV
+  viewJD, viewCV,
+  // JD Library
+  onJDLibFilterChange, onLibraryJDFileSelected, confirmRemoveLibraryJD, viewLibraryJD,
 });
 </script>
 </body>
