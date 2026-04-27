@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ISI Group Talent</title>
-<!-- build: 2026-04-22-v34 TA team feedback batch (27 Apr): email optional, 'Applicant' wording, criminal-check optional, COI check added (4/5 items; revision flow → v35) -->
+<!-- build: 2026-04-22-v35 Revise & Resubmit flow + COI signed-form upload (replaces v34 checkbox) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600;700&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1287,7 +1287,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Build version marker — visible in console so we can verify which build a user has cached
-const HWM_BUILD = '2026-04-22-v34';
+const HWM_BUILD = '2026-04-22-v35';
 console.log('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Current session state
@@ -1369,6 +1369,9 @@ let currentUserId = null;  // set by auth flow after login
 let currentRole = 'requester';
 let currentView = 'dashboard';
 let selectedReqId = null;
+// When non-null, the new-req form is in EDIT MODE for an existing requisition.
+// Used by the Revise & Resubmit flow when a requester revises a returned req.
+let editingReqId = null;
 let requisitions = [];
 let candidates = [];
 let activities = [];
@@ -1650,6 +1653,10 @@ const TRANSLATIONS = {
     modal_revise_title: 'Revise requisition',
     modal_revise_desc: 'Address the revision notes from the approver, edit fields as needed, then resubmit. The requisition will go back to HRBP review.',
     banner_revisions: 'Revisions requested. Click "Revise & Resubmit" below to update and re-send for approval.',
+
+    // ⭐ v35 — COI document upload (replaces v34 checkbox)
+    lbl_coi: 'Conflict of Interest (COI) declaration',
+    lbl_coi_no_doc: 'No COI form uploaded yet',
   },
   km: {
     product_name: 'ប្រព័ន្ធជ្រើសរើសបុគ្គលិក',
@@ -1905,6 +1912,10 @@ const TRANSLATIONS = {
     modal_revise_title: 'កែសម្រួលសំណើ',
     modal_revise_desc: 'ដោះស្រាយតាមកំណត់ចំណាំពីអ្នកអនុម័ត កែសម្រួលប្រអប់តាមតម្រូវការ ហើយផ្ញើឡើងវិញ។ សំណើនឹងវិលត្រឡប់ទៅការពិនិត្យ HRBP។',
     banner_revisions: 'បានស្នើសុំការកែសម្រួល។ ចុច "កែសម្រួល និងផ្ញើឡើងវិញ" ខាងក្រោមដើម្បីធ្វើបច្ចុប្បន្នភាព និងផ្ញើឡើងវិញសម្រាប់ការអនុម័ត។',
+
+    // ⭐ v35 — COI document upload (replaces v34 checkbox)
+    lbl_coi: 'សេចក្តីប្រកាសជម្លោះផលប្រយោជន៍ (COI)',
+    lbl_coi_no_doc: 'មិនទាន់បានផ្ទុកឡើងឯកសារ COI ទេ',
   }
 };
 
@@ -2099,6 +2110,9 @@ function candFromDb(row, appRow) {
       criminal: !!appRow?.checks_criminal,
       education: !!appRow?.checks_education,
       coi: !!appRow?.checks_coi,
+      coiStoragePath: appRow?.coi_storage_path || null,
+      coiFilename: appRow?.coi_filename || null,
+      coiUploadedAt: appRow?.coi_uploaded_at || null,
       notes: appRow?.checks_notes || ''
     },
     offer: appRow?.offer_status ? {
@@ -2431,6 +2445,9 @@ async function saveSingleCandidate(c) {
     checks_criminal: !!c.preEmploymentChecks?.criminal,
     checks_education: !!c.preEmploymentChecks?.education,
     checks_coi: !!c.preEmploymentChecks?.coi,
+    coi_storage_path: c.preEmploymentChecks?.coiStoragePath || null,
+    coi_filename: c.preEmploymentChecks?.coiFilename || null,
+    coi_uploaded_at: c.preEmploymentChecks?.coiUploadedAt || null,
     checks_notes: c.preEmploymentChecks?.notes || null,
     offer_salary: c.offer?.salary ?? null,
     offer_grade: c.offer?.grade ?? null,
@@ -2507,6 +2524,9 @@ async function saveCandidates(list) {
       checks_criminal: !!c.preEmploymentChecks?.criminal,
       checks_education: !!c.preEmploymentChecks?.education,
       checks_coi: !!c.preEmploymentChecks?.coi,
+      coi_storage_path: c.preEmploymentChecks?.coiStoragePath || null,
+      coi_filename: c.preEmploymentChecks?.coiFilename || null,
+      coi_uploaded_at: c.preEmploymentChecks?.coiUploadedAt || null,
       checks_notes: c.preEmploymentChecks?.notes || null,
       offer_salary: c.offer?.salary ?? null,
       offer_grade: c.offer?.grade ?? null,
@@ -2852,7 +2872,13 @@ const ICONS = {
 function renderRequester() {
   const main = document.getElementById('mainView');
   
-  if (currentView === 'new_req') { main.innerHTML = renderNewReqForm(); return; }
+  if (currentView === 'new_req') {
+    main.innerHTML = renderNewReqForm();
+    // If we got here via "Revise & Resubmit", populate the form with the existing
+    // req's values. Done after innerHTML so DOM elements exist.
+    if (editingReqId) prefillEditForm(editingReqId);
+    return;
+  }
   if (currentView === 'req_detail' && selectedReqId) { main.innerHTML = renderRequesterDetail(selectedReqId); return; }
   
   // ⭐ Filter by REAL requester id (Supabase auth UUID) for non-admins, so each
@@ -3047,17 +3073,26 @@ function renderReqRow(r) {
 }
 
 function renderNewReqForm() {
+  const isEditing = !!editingReqId;
+  const editingReq = isEditing ? requisitions.find(r => r.id === editingReqId) : null;
   return `
     <div class="view-enter">
-      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_dash')}</button>
+      <button class="detail-back" onclick="${isEditing ? `cancelRevision()` : `setView('dashboard')`}">${ICONS.back} ${t('btn_back_dash')}</button>
       
       <div class="page-header">
         <div class="page-title-group">
-          <div class="eyebrow">${t('btn_new_req')}</div>
-          <h1>${t('btn_new_req')}</h1>
-          <p>${t('sub_requester')}</p>
+          <div class="eyebrow">${isEditing ? (t('modal_revise_title') || 'Revise requisition') : t('btn_new_req')}</div>
+          <h1>${isEditing ? (t('modal_revise_title') || 'Revise requisition') : t('btn_new_req')}</h1>
+          <p>${isEditing ? (t('modal_revise_desc') || 'Address the revision notes from the approver, edit fields as needed, then resubmit. The requisition will go back to HRBP review.') : t('sub_requester')}</p>
         </div>
       </div>
+      
+      ${isEditing && editingReq?.revisionNotes ? `
+        <div class="panel" style="border-left: 3px solid var(--warning); margin-bottom: 1.25rem;">
+          <div class="panel-header"><div class="panel-title" style="color: var(--warning);">${t('lbl_rev_notes')}</div></div>
+          <div class="panel-body"><p>${editingReq.revisionNotes}</p></div>
+        </div>
+      ` : ''}
       
       <form id="newReqForm" onsubmit="event.preventDefault(); submitNewReq();">
         
@@ -3218,8 +3253,8 @@ function renderNewReqForm() {
         </div>
         
         <div class="flex-gap" style="justify-content: flex-end;">
-          <button type="button" class="btn btn-secondary" onclick="setView('dashboard')">${t('btn_cancel')}</button>
-          <button type="submit" class="btn btn-primary">${t('btn_submit_req')}</button>
+          <button type="button" class="btn btn-secondary" onclick="${isEditing ? `cancelRevision()` : `setView('dashboard')`}">${t('btn_cancel')}</button>
+          <button type="submit" class="btn btn-primary">${isEditing ? (t('btn_revise_resubmit') || 'Revise & Resubmit') : t('btn_submit_req')}</button>
         </div>
       </form>
     </div>
@@ -3251,6 +3286,111 @@ function toggleNewRole() {
   const roleSelect = document.getElementById('roleSelect').value;
   document.getElementById('newRoleFields').classList.toggle('hidden', roleSelect !== 'NEW');
   renderJDSlot(roleSelect);
+}
+
+// Pre-fill the new-req form with existing req values when in edit mode.
+// Called after renderNewReqForm() returns its HTML, so DOM elements exist.
+// Mirrors the inverse of submitNewReq's read logic.
+function prefillEditForm(reqId) {
+  const r = requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  // Organization cascade — set function, trigger subFunction list, set sub, trigger units, set unit
+  const fnEl = document.getElementById('function');
+  if (fnEl && r.function) {
+    fnEl.value = r.function;
+    updateSubFunctions();
+    const subEl = document.getElementById('subFunction');
+    if (subEl && r.subFunction) {
+      subEl.value = r.subFunction;
+      updateUnits();
+      const unitEl = document.getElementById('unit');
+      if (unitEl && r.unit) unitEl.value = r.unit;
+    }
+  }
+  // Role
+  const roleEl = document.getElementById('roleSelect');
+  if (roleEl) {
+    if (r.roleId) {
+      roleEl.value = r.roleId;
+    } else if (r.isNewRole) {
+      roleEl.value = 'NEW';
+      const titleEl = document.getElementById('newRoleTitle');
+      const gradeEl = document.getElementById('newRoleGrade');
+      if (titleEl) titleEl.value = r.roleTitle || '';
+      if (gradeEl) gradeEl.value = r.grade || '';
+    }
+    toggleNewRole();
+  }
+  // Replacement / planned radios
+  const repRadio = document.querySelector(`input[name="isReplacement"][value="${r.isReplacement ? 'yes' : 'no'}"]`);
+  if (repRadio) repRadio.checked = true;
+  const planRadio = document.querySelector(`input[name="isPlanned"][value="${r.isPlanned ? 'yes' : 'no'}"]`);
+  if (planRadio) planRadio.checked = true;
+  if (typeof checkUnplanned === 'function') checkUnplanned();
+  // Justification
+  const justEl = document.getElementById('justification');
+  if (justEl) justEl.value = r.justification || '';
+  // Resources
+  const res = r.resourcesRequired || { items: [], other: null };
+  if (Array.isArray(res.items)) {
+    res.items.forEach(key => {
+      const cb = document.querySelector(`input[name="resources"][value="${key}"]`);
+      if (cb) cb.checked = true;
+    });
+  }
+  if (res.other) {
+    const otherInput = document.getElementById('resOtherText');
+    if (otherInput) otherInput.value = res.other;
+    const otherWrap = document.getElementById('resOtherWrap');
+    if (otherWrap) otherWrap.classList.remove('hidden');
+    const otherCb = document.querySelector(`input[name="resources"][value="other"]`);
+    if (otherCb) otherCb.checked = true;
+  }
+  if (Array.isArray(res.items) && res.items.length === 0 && !res.other) {
+    const noneCb = document.getElementById('resNone');
+    if (noneCb) noneCb.checked = true;
+  }
+  // Reporting (supervisor + HM)
+  const supEl = document.getElementById('immediateSupervisor');
+  if (supEl && r.immediateSupervisor) {
+    // Try to find the matching employee for a richer label; fall back to raw name
+    const emp = employeeMaps.list.find(e => e.id === r.immediateSupervisorId) ||
+                employeeMaps.list.find(e => e.name_en === r.immediateSupervisor);
+    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''} (${emp.grade || ''})` : r.immediateSupervisor;
+  }
+  // Same HM logic — if hiringManager is empty/same as supervisor, mark "yes"; else "no" + populate
+  const sameHMYes = document.querySelector(`input[name="sameHM"][value="yes"]`);
+  const sameHMNo = document.querySelector(`input[name="sameHM"][value="no"]`);
+  const hmField = document.getElementById('hmField');
+  const hmEl = document.getElementById('hiringManager');
+  if (r.hiringManager && r.hiringManager !== r.immediateSupervisor) {
+    if (sameHMNo) sameHMNo.checked = true;
+    if (hmField) hmField.classList.remove('hidden');
+    if (hmEl) {
+      const emp = employeeMaps.list.find(e => e.id === r.hiringManagerId) ||
+                  employeeMaps.list.find(e => e.name_en === r.hiringManager);
+      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''} (${emp.grade || ''})` : r.hiringManager;
+    }
+  } else {
+    if (sameHMYes) sameHMYes.checked = true;
+  }
+  // Target fill date — if a date input exists in the form
+  const tfEl = document.getElementById('targetFillDate');
+  if (tfEl && r.targetFillDate) {
+    tfEl.value = r.targetFillDate.slice(0, 10);  // YYYY-MM-DD
+  }
+}
+
+// Exit edit mode without resubmitting — return to the req detail.
+function cancelRevision() {
+  const id = editingReqId;
+  editingReqId = null;
+  if (id) {
+    selectedReqId = id;
+    setView('req_detail');
+  } else {
+    setView('dashboard');
+  }
 }
 
 // Render the JD section in the new-req form. If the selected role has a
@@ -3377,6 +3517,13 @@ async function viewCV(candDbId) {
 }
 
 async function submitNewReq() {
+  const isEditing = !!editingReqId;
+  const existingReq = isEditing ? requisitions.find(r => r.id === editingReqId) : null;
+  if (isEditing && !existingReq) {
+    alert('Requisition not found — please return to dashboard.');
+    return;
+  }
+
   const roleSelect = document.getElementById('roleSelect').value;
   if (!roleSelect) { alert('Please select a role'); return; }
   const isRep = document.querySelector('input[name="isReplacement"]:checked');
@@ -3386,11 +3533,14 @@ async function submitNewReq() {
   // ⭐ JD handling: if the selected role has a standard JD in the library,
   // the requester doesn't need to (and can't) upload one — we auto-attach
   // the library path. Otherwise, the file input is present and required.
+  // EDIT MODE: if no new JD file is selected and the existing req already has
+  // a JD attached, we keep the existing one. Otherwise apply the same rules.
   const selectedRoleLib = (roleSelect && roleSelect !== 'NEW') ? roleLibMaps.byLegacyId[roleSelect] : null;
   const useLibraryJD = !!(selectedRoleLib && selectedRoleLib.standard_jd_path);
   const jdFileEl = document.getElementById('jdFile');
   const jdFile = jdFileEl ? jdFileEl.files[0] : null;
-  if (!useLibraryJD) {
+  const keepExistingJD = isEditing && !jdFile && !useLibraryJD && existingReq?.jdStoragePath;
+  if (!useLibraryJD && !keepExistingJD) {
     if (!jdFile) { alert('Please upload JD'); return; }
     if (jdFile.type !== 'application/pdf') { alert('JD must be PDF'); return; }
   }
@@ -3458,6 +3608,102 @@ async function submitNewReq() {
     : { items: pickedResources, other: pickedResources.includes('other') ? otherText : null };
 
   const isUnplanned = isRep.value === 'no' && isPlan.value === 'no';
+
+  // ============================================================
+  // EDIT MODE: update existing requisition in place
+  // ============================================================
+  if (isEditing) {
+    const r = existingReq;
+    // Apply edits to the in-memory object
+    r.roleId = roleId;
+    r.roleTitle = roleTitle;
+    r.isNewRole = isNewRole;
+    r.grade = grade;
+    r.function = document.getElementById('function').value;
+    r.subFunction = document.getElementById('subFunction').value;
+    r.unit = document.getElementById('unit').value;
+    r.isReplacement = isRep.value === 'yes';
+    r.isPlanned = isPlan.value === 'yes';
+    r.justification = document.getElementById('justification').value;
+    r.resourcesRequired = resourcesRequired;
+    r.immediateSupervisorId = supId;
+    r.hiringManagerId = hmId;
+    r.supervisorEmpId = supEmpId;
+    r.hmEmpId = hmEmpId;
+    r.approvalPath = isUnplanned ? 'ceo_required' : 'standard';
+    // Reset approval state — the req goes back to HRBP review for re-approval
+    r.status = 'hrbp_review';
+    r.hrbpApprovedAt = null;
+    r.fhApprovedAt = null;
+    r.ceoApprovedAt = null;
+    r.taAssignedAt = null;
+    r.hrbpJustification = null;
+    r.fhJustification = null;
+    r.ceoJustification = null;
+    // Keep revisionNotes for audit trail (so HRBP sees what was previously asked)
+
+    // Persist
+    try {
+      await saveSingleRequisition(r);
+    } catch (e) {
+      alert('Failed to resubmit: ' + (e.message || e));
+      return;
+    }
+
+    // JD: if a new file was provided OR the user changed roles to one with a
+    // library JD, replace the JD; otherwise keep the existing one.
+    if (r._dbId && currentMember?.tenant_id && (jdFile || useLibraryJD)) {
+      try {
+        const ts = Date.now();
+        let storagePath, displayName, uploadBlob, uploadContentType;
+        if (jdFile) {
+          uploadBlob = jdFile;
+          uploadContentType = 'application/pdf';
+          const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+          storagePath = `jds/${currentMember.tenant_id}/${r._dbId}/${ts}-${safeName}`;
+          displayName = jdFile.name;
+        } else if (useLibraryJD) {
+          displayName = selectedRoleLib.standard_jd_filename || 'Standard JD.pdf';
+          const { data: sig, error: sigErr } = await sb.storage
+            .from('hire-medha').createSignedUrl(selectedRoleLib.standard_jd_path, 60);
+          if (sigErr) throw sigErr;
+          const resp = await fetch(sig.signedUrl);
+          if (!resp.ok) throw new Error('Could not fetch library JD: HTTP ' + resp.status);
+          uploadBlob = await resp.blob();
+          uploadContentType = 'application/pdf';
+          const safeName = displayName.replace(/[^a-zA-Z0-9._-]/g, '_');
+          storagePath = `jds/${currentMember.tenant_id}/${r._dbId}/${ts}-lib-${safeName}`;
+        }
+        const { error: upErr } = await sb.storage
+          .from('hire-medha').upload(storagePath, uploadBlob, { contentType: uploadContentType, upsert: false });
+        if (upErr) throw upErr;
+        const { error: updErr } = await sb.from('requisitions').update({
+          jd_storage_path: storagePath,
+          jd_uploaded_at: new Date().toISOString(),
+          jd_filename: displayName,
+        }).eq('id', r._dbId);
+        if (updErr) throw updErr;
+        r.jdStoragePath = storagePath;
+        r.jdFilename = displayName;
+        r.jdUploadedAt = new Date().toISOString();
+      } catch (e) {
+        console.error('JD persist (revise) failed:', e);
+        toast('Resubmitted, but JD update failed: ' + (e.message || e), true);
+      }
+    }
+
+    logActivity(r.id, 'Requisition revised by requester — back to HRBP review');
+    await saveData('activities', activities);
+    editingReqId = null;
+    selectedReqId = r.id;
+    alert(`Requisition ${r.id} revised and resubmitted to HRBP review.`);
+    setView('req_detail');
+    return;
+  }
+
+  // ============================================================
+  // CREATE MODE: original new-req flow continues below
+  // ============================================================
   const newReq = {
     id: generateReqId(), roleId, roleTitle, isNewRole, grade,
     function: document.getElementById('function').value,
@@ -3681,6 +3927,16 @@ function renderRequesterDetail(reqId) {
         </div>
         
         <div class="side-panel">
+          ${r.status === 'revisions_requested' ? `
+            <div class="panel" style="border-left: 3px solid var(--warning);">
+              <div class="panel-header"><div class="panel-title" style="color: var(--warning);">${t('sec_actions')}</div></div>
+              <div class="panel-body">
+                <p class="text-sm" style="margin-bottom: 0.75rem; color: var(--ink-2);">${t('banner_revisions') || 'Revisions requested. Click below to update and re-send for approval.'}</p>
+                <button class="btn btn-primary full-width" onclick="reviseReq('${r.id}')">${ICONS.edit || '✎'} ${t('btn_revise_resubmit') || 'Revise & Resubmit'}</button>
+              </div>
+            </div>
+          ` : ''}
+          
           ${(canHoldOrCancel || canResume) ? `
             <div class="panel">
               <div class="panel-header"><div class="panel-title">${t('sec_actions')}</div></div>
@@ -4094,6 +4350,21 @@ async function submitHold(reqId) {
   r.heldAt = new Date().toISOString();
   const ok = await persistReqChange(r, `Put on hold by requester: ${reason.length > 80 ? reason.substring(0, 80) + '…' : reason}`, { nextView: null });
   if (ok) render();
+}
+
+// Enter edit mode for an existing requisition (typically after HRBP requested
+// revisions). Sets the editingReqId flag and navigates to the new-req form,
+// which will pre-fill all fields from the existing req.
+function reviseReq(reqId) {
+  const r = requisitions.find(x => x.id === reqId);
+  if (!r) { toast('Requisition not found', true); return; }
+  if (r.status !== 'revisions_requested') {
+    toast('This requisition is not pending revision', true);
+    return;
+  }
+  editingReqId = reqId;
+  selectedReqId = null;
+  setView('new_req');
 }
 
 function resumeReq(reqId) {
@@ -4998,9 +5269,14 @@ function renderCandCard(c, isOnHold = false) {
   } else if (c.stage === 'interview') {
     actions = `<button class="btn btn-secondary" onclick="addFeedback('${c.id}')" ${dis}>Feedback</button><button class="btn btn-primary" onclick="moveCandidate('${c.id}', 'preemployment')" ${dis}>Pre-emp</button><button class="btn btn-danger" onclick="rejectCandidate('${c.id}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'preemployment') {
-    // Pre-employment "all checks pass" gating: required = reference, background, education, COI.
+    // Pre-employment "all checks pass" gating: required = reference, background, education, COI document.
     // Criminal record check is OPTIONAL (per TA team feedback 27 Apr — sometimes not applicable).
-    const allOK = c.preEmploymentChecks && c.preEmploymentChecks.reference && c.preEmploymentChecks.background && c.preEmploymentChecks.education && c.preEmploymentChecks.coi;
+    // COI is satisfied by an UPLOADED signed declaration form (v35), not a checkbox.
+    const allOK = c.preEmploymentChecks
+      && c.preEmploymentChecks.reference
+      && c.preEmploymentChecks.background
+      && c.preEmploymentChecks.education
+      && !!c.preEmploymentChecks.coiStoragePath;
     actions = `<button class="btn btn-secondary" onclick="updateChecks('${c.id}')" ${dis}>Checks</button><button class="btn btn-primary" onclick="moveCandidate('${c.id}', 'offer')" ${allOK && !isOnHold ? '' : 'disabled'}>Offer</button><button class="btn btn-danger" onclick="rejectCandidate('${c.id}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'offer') {
     if (!c.offer) actions = `<button class="btn btn-primary" onclick="prepareOffer('${c.id}')" ${dis}>Prepare offer</button>`;
@@ -5419,16 +5695,40 @@ async function submitFeedback(candId) {
 function updateChecks(candId) {
   const c = candidates.find(x => x.id === candId);
   const checks = c.preEmploymentChecks || {};
+  const hasCOI = !!checks.coiStoragePath;
   openModal(`
     <div class="modal-header"><h2>${t('modal_pre_emp')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <p class="modal-desc"><strong>${c.name}</strong></p>
     <div class="form-group">
       <label class="checkbox-row"><input type="checkbox" id="chkRef" ${checks.reference ? 'checked' : ''}> ${t('chk_ref')}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkBack" ${checks.background ? 'checked' : ''}> ${t('chk_back')}</label>
-      <label class="checkbox-row"><input type="checkbox" id="chkCoi" ${checks.coi ? 'checked' : ''}> ${t('chk_coi') || 'Conflict of Interest (COI) check completed'}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkEdu" ${checks.education ? 'checked' : ''}> ${t('chk_edu')}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkCrim" ${checks.criminal ? 'checked' : ''}> ${t('chk_crim')} <span class="text-xs text-muted">(optional)</span></label>
     </div>
+
+    <!-- COI is special: it's a signed declaration form, not a yes/no toggle.
+         We track the uploaded document path; "complete" = file present. -->
+    <div class="form-group" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--rule);">
+      <label style="display: block; margin-bottom: 0.5rem; font-weight: 500;">${t('lbl_coi') || 'Conflict of Interest (COI) declaration'}</label>
+      <div id="coiSlot" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--rule); border-radius: var(--radius-sm); background: var(--paper);">
+        ${hasCOI ? `
+          <div style="color: var(--success); display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem;">
+            ${ICONS.check || '✓'} <span class="text-xs text-muted">${checks.coiFilename || 'COI form.pdf'}</span>
+          </div>
+          <div style="margin-left: auto; display: flex; gap: 0.5rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="viewCOI('${candId}')">${t('btn_view') || 'View'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('coiUpl-${candId}').click()">${t('btn_replace') || 'Replace'}</button>
+          </div>
+        ` : `
+          <span class="text-xs text-muted">${t('lbl_coi_no_doc') || 'No COI form uploaded yet'}</span>
+          <div style="margin-left: auto;">
+            <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('coiUpl-${candId}').click()">${t('btn_upload') || 'Upload'}</button>
+          </div>
+        `}
+        <input type="file" id="coiUpl-${candId}" accept=".pdf" style="display: none;" onchange="onCOIFileSelected('${candId}', this)">
+      </div>
+    </div>
+
     <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="chkNotes" rows="3">${checks.notes || ''}</textarea></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
@@ -5439,15 +5739,78 @@ function updateChecks(candId) {
 
 async function saveChecks(candId) {
   const c = candidates.find(x => x.id === candId);
+  const existing = c.preEmploymentChecks || {};
+  // Preserve COI document fields — those are managed separately via upload flow
   c.preEmploymentChecks = {
     reference: document.getElementById('chkRef').checked,
     background: document.getElementById('chkBack').checked,
     criminal: document.getElementById('chkCrim').checked,
     education: document.getElementById('chkEdu').checked,
-    coi: document.getElementById('chkCoi').checked,
+    coi: !!existing.coiStoragePath,  // legacy boolean = derived from doc presence
+    coiStoragePath: existing.coiStoragePath || null,
+    coiFilename: existing.coiFilename || null,
+    coiUploadedAt: existing.coiUploadedAt || null,
     notes: document.getElementById('chkNotes').value
   };
   await persistCandidateChange(c, null);
+}
+
+// Upload a candidate's signed COI form. Storage path:
+//   coi-forms/{tenant_id}/{candidate_db_id}/{ts}-{filename}.pdf
+async function onCOIFileSelected(candId, fileInput) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') { alert(t('err_pdf_only') || 'Only PDF files are allowed.'); fileInput.value = ''; return; }
+  if (file.size > 10 * 1024 * 1024) { alert(t('err_too_big') || 'File too large (max 10MB).'); fileInput.value = ''; return; }
+  const c = candidates.find(x => x.id === candId);
+  if (!c || !c._dbId || !currentMember?.tenant_id) { toast('Cannot upload — candidate not yet saved', true); return; }
+  toast(t('msg_uploading') || 'Uploading…');
+  try {
+    const ts = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `coi-forms/${currentMember.tenant_id}/${c._dbId}/${ts}-${safeName}`;
+    const { error: upErr } = await sb.storage
+      .from('hire-medha').upload(storagePath, file, { contentType: 'application/pdf', upsert: false });
+    if (upErr) throw upErr;
+    const { error: updErr } = await sb.from('applications').update({
+      coi_storage_path: storagePath,
+      coi_filename: file.name,
+      coi_uploaded_at: new Date().toISOString(),
+      coi_uploaded_by: currentAuthUser?.id || null,
+      checks_coi: true,  // legacy boolean stays in sync
+    }).eq('id', c._dbId);
+    if (updErr) throw updErr;
+    // Update in-memory cache
+    c.preEmploymentChecks = c.preEmploymentChecks || {};
+    c.preEmploymentChecks.coiStoragePath = storagePath;
+    c.preEmploymentChecks.coiFilename = file.name;
+    c.preEmploymentChecks.coiUploadedAt = new Date().toISOString();
+    c.preEmploymentChecks.coi = true;
+    toast(t('msg_uploaded') || 'COI uploaded ✓');
+    fileInput.value = '';
+    closeModal();
+    updateChecks(candId);  // re-open with fresh state
+  } catch (e) {
+    console.error('COI upload failed:', e);
+    toast('COI upload failed: ' + (e.message || e), true);
+    fileInput.value = '';
+  }
+}
+
+// View an existing COI document (signed URL, 1-hour TTL).
+async function viewCOI(candId) {
+  const c = candidates.find(x => x.id === candId);
+  const path = c?.preEmploymentChecks?.coiStoragePath;
+  if (!path) { toast('No COI document found', true); return; }
+  try {
+    const { data, error } = await sb.storage.from('hire-medha').createSignedUrl(path, 3600);
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewCOI failed:', e);
+    toast('Could not open COI: ' + (e.message || e), true);
+  }
 }
 
 function prepareOffer(candId) {
@@ -5750,7 +6113,10 @@ async function removeLibraryJD(roleLibraryId) {
 // ============================================================
 function setView(view) {
   currentView = view;
-  if (view === 'dashboard') selectedReqId = null;
+  if (view === 'dashboard') {
+    selectedReqId = null;
+    editingReqId = null;  // exiting any edit-in-progress when going to dashboard
+  }
   renderHeader();  // refresh nav button active state
   render();
 }
@@ -5887,6 +6253,10 @@ Object.assign(window, {
   onJDLibFilterChange, onLibraryJDFileSelected, confirmRemoveLibraryJD, viewLibraryJD,
   // CV auto-fill
   onCandCVSelected, onCandFieldEdit,
+  // Revision flow
+  reviseReq, cancelRevision,
+  // COI document upload
+  onCOIFileSelected, viewCOI,
 });
 </script>
 </body>
