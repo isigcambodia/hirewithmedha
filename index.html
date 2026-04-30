@@ -1161,6 +1161,7 @@ details.collapsible > *:not(summary) { margin-top: 1rem; }
       </div>
       <span class="dev-badge">Dev Mode</span>
       <div class="role-switcher" id="roleSwitcher"></div>
+      <div id="onboardingNav" style="display: none;"></div>
       <div id="adminNav" style="display: none;"></div>
       <div class="user-chip" id="userChip"></div>
     </div>
@@ -1375,6 +1376,10 @@ let editingReqId = null;
 let requisitions = [];
 let candidates = [];
 let activities = [];
+// Gap 3 — Onboarding records (one per hire). Populated from DB at load time;
+// auto-created when an offer is accepted in offerResponse().
+let onboardings = [];
+let onboardingTab = 'starts';   // which tab is active in the Hires & Onboarding page
 let currentLang = 'en';
 
 // ============================================================
@@ -2195,7 +2200,7 @@ async function loadEverything() {
   const t = currentTenantId;
 
   // Parallel fetch
-  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes] = await Promise.all([
+  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes] = await Promise.all([
     sb.from('departments').select('*').eq('tenant_id', t),
     sb.from('role_library').select('*').eq('tenant_id', t).eq('is_active', true),
     sb.from('requisitions').select('*').eq('tenant_id', t).is('deleted_at', null).order('created_at'),
@@ -2214,6 +2219,8 @@ async function loadEverything() {
     // Employees: source of truth for Supervisor/HM pickers. Includes people
     // without logins (most of the 745). Name resolution + dropdowns pull from here.
     sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, company_email, user_id, company').eq('tenant_id', t).eq('status', 'Active').order('name_en'),
+    // Gap 3 — Onboarding records. Always fetched (table may be empty initially).
+    sb.from('onboarding').select('*').eq('tenant_id', t).is('deleted_at', null),
   ]);
 
   // Build the real-users lookup from tenant_members + profiles
@@ -2373,6 +2380,122 @@ async function loadEverything() {
 
   // Transform activity log
   activities = (actRes.data || []).map(activityFromDb);
+
+  // Gap 3 — Onboarding records. Stored DB-shape is camelCased here for consistency
+  // with the rest of the in-memory model (camelCase). Empty array if none.
+  onboardings = (onboardingsRes?.data || []).map(onboardingFromDb);
+}
+
+// Gap 3 — DB row → in-memory shape (camelCase). Symmetric with onboardingToDb.
+function onboardingFromDb(row) {
+  return {
+    _dbId: row.id,
+    applicationId: row.application_id,
+    candidateId: row.candidate_id,
+    requisitionId: row.requisition_id,
+    intendedStartDate: row.intended_start_date,
+    actualStartDate: row.actual_start_date,
+    startStatus: row.start_status,
+    startLoggedAt: row.start_logged_at,
+    startLoggedBy: row.start_logged_by,
+    probationEndDate: row.probation_end_date,
+    probationOutcome: row.probation_outcome,
+    probationLoggedAt: row.probation_logged_at,
+    probationLoggedBy: row.probation_logged_by,
+    probationNotes: row.probation_notes,
+    exitDate: row.exit_date,
+    exitReason: row.exit_reason,
+    exitInitiator: row.exit_initiator,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// Gap 3 — In-memory → DB shape. Used by saveOnboardingRecord.
+function onboardingToDb(o) {
+  return {
+    tenant_id: currentTenantId,
+    application_id: o.applicationId,
+    candidate_id: o.candidateId,
+    requisition_id: o.requisitionId,
+    intended_start_date: o.intendedStartDate || null,
+    actual_start_date: o.actualStartDate || null,
+    start_status: o.startStatus || null,
+    start_logged_at: o.startLoggedAt || null,
+    start_logged_by: o.startLoggedBy || null,
+    probation_end_date: o.probationEndDate || null,
+    probation_outcome: o.probationOutcome || null,
+    probation_logged_at: o.probationLoggedAt || null,
+    probation_logged_by: o.probationLoggedBy || null,
+    probation_notes: (o.probationNotes && o.probationNotes.trim()) || null,
+    exit_date: o.exitDate || null,
+    exit_reason: (o.exitReason && o.exitReason.trim()) || null,
+    exit_initiator: o.exitInitiator || null,
+    notes: (o.notes && o.notes.trim()) || null,
+  };
+}
+
+// Gap 3 — Save (insert if no _dbId, otherwise update). Returns the in-memory row.
+async function saveOnboardingRecord(o) {
+  const payload = onboardingToDb(o);
+  if (o._dbId) {
+    const { data, error } = await sb.from('onboarding').update(payload).eq('id', o._dbId).select();
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error('Update blocked by database policy.');
+    }
+    return o;
+  } else {
+    const { data, error } = await sb.from('onboarding').insert(payload).select().single();
+    if (error) throw error;
+    o._dbId = data.id;
+    o.createdAt = data.created_at;
+    o.updatedAt = data.updated_at;
+    return o;
+  }
+}
+
+// Gap 3 — Auto-create an onboarding row when an offer is accepted. Idempotent —
+// if a row already exists for this application_id, returns it without re-creating.
+// Called from offerResponse() right after the requisition save succeeds.
+async function autoCreateOnboardingForHire(candidate) {
+  // Sanity checks
+  if (!candidate?._appDbId) {
+    console.warn('[onboarding] candidate has no application _dbId — cannot auto-create');
+    return null;
+  }
+  if (!candidate.offer?.startDate) {
+    console.warn('[onboarding] no offer start date — cannot auto-create');
+    return null;
+  }
+
+  // Idempotent: check if one already exists for this application
+  const existing = onboardings.find(o => o.applicationId === candidate._appDbId);
+  if (existing) return existing;
+
+  // Compute probation_end_date = start_date + 30 days (Cambodia standard)
+  const startDate = new Date(candidate.offer.startDate);
+  const probationEnd = new Date(startDate);
+  probationEnd.setDate(probationEnd.getDate() + 30);
+
+  const newRow = {
+    applicationId: candidate._appDbId,
+    candidateId: candidate._dbId || null,
+    requisitionId: requisitions.find(r => r.id === candidate.reqId)?._dbId || null,
+    intendedStartDate: candidate.offer.startDate,
+    probationEndDate: probationEnd.toISOString().slice(0, 10),
+    probationOutcome: 'pending',
+  };
+  try {
+    await saveOnboardingRecord(newRow);
+    onboardings.push(newRow);
+    return newRow;
+  } catch (e) {
+    console.error('[onboarding] auto-create failed:', e);
+    // Don't toast — this is a background task. Failure here shouldn't block the offer flow.
+    return null;
+  }
 }
 
 // ---- The drop-in replacement for saveData ----
@@ -2957,6 +3080,26 @@ function renderHeader() {
       adminNav.style.display = 'none';
       adminNav.innerHTML = '';
     }
+  }
+
+  // Gap 3 — Hires & Onboarding nav. Available to all logged-in users.
+  // We deliberately don't gate by role yet (per design discussion: "build the
+  // platform people will use, then enforce roles once we see actual usage").
+  // Badges show actionable counts so people self-direct to what's relevant.
+  const onboardingNav = document.getElementById('onboardingNav');
+  if (onboardingNav) {
+    onboardingNav.style.display = '';
+    const onPage = currentView === 'onboarding';
+    const counts = computeOnboardingCounts();
+    const badgeTotal = counts.day1Pending + counts.probationPending;
+    const badgeHtml = badgeTotal > 0
+      ? `<span style="display:inline-block; min-width: 18px; height: 18px; line-height: 18px; padding: 0 5px; margin-left: 6px; background: var(--blaze, #e0592a); color: white; border-radius: 9px; font-size: 11px; font-weight: 700; text-align: center;">${badgeTotal}</span>`
+      : '';
+    onboardingNav.innerHTML = `
+      <button class="role-btn ${onPage ? 'active' : ''}" onclick="setView('${onPage ? 'dashboard' : 'onboarding'}')" style="margin-left: 0.5rem;">
+        ${onPage ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_onboarding') || 'Hires & Onboarding')}${badgeHtml}
+      </button>
+    `;
   }
 
   // ⭐ User chip now shows the REAL logged-in user's name, not the hardcoded USERS[0].
@@ -6120,6 +6263,9 @@ async function offerResponse(candId, response) {
       return;
     }
     reqActivity = `Offer accepted — expected start: ${formatDate(c.offer.startDate)}`;
+    // Gap 3 — auto-create onboarding row so the recruiter can log day 1 status
+    // and the HRBP can log probation outcome at day 30.
+    autoCreateOnboardingForHire(c).catch(e => console.error('[onboarding] background:', e));
   } else if (response === 'declined') {
     c.status = 'rejected';
     reqActivity = 'Offer declined';
@@ -6366,6 +6512,497 @@ async function removeLibraryJD(roleLibraryId) {
 // ============================================================
 // DISPATCH
 // ============================================================
+// ============================================================
+// GAP 3 — HIRES & ONBOARDING PAGE
+// ============================================================
+// Multi-tab page tracking the post-offer lifecycle:
+//   • This week's starts (recruiter focus): hires whose intended_start_date is
+//     in the past 7 days OR upcoming 14 days, that haven't had day-1 logged.
+//   • Probation reviews due (HRBP focus): onboardings whose probation_end_date
+//     has passed but probation_outcome is still 'pending' or NULL.
+//   • Recent exits (HRBP/leadership): people who left in the last 90 days.
+
+// Helper: compute pending counts used by the sidebar badge.
+function computeOnboardingCounts() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const twoWeeks = new Date(today); twoWeeks.setDate(twoWeeks.getDate() + 14);
+  const day1Pending = onboardings.filter(o => {
+    if (o.startStatus) return false;  // already logged
+    if (!o.intendedStartDate) return false;
+    const sd = new Date(o.intendedStartDate);
+    return sd <= twoWeeks;  // imminent or overdue
+  }).length;
+  const probationPending = onboardings.filter(o => {
+    if (o.probationOutcome && o.probationOutcome !== 'pending') return false;
+    if (!o.probationEndDate) return false;
+    return new Date(o.probationEndDate) <= today;  // probation period reached
+  }).length;
+  return { day1Pending, probationPending };
+}
+
+// Build a friendly label + relative timing string (e.g. "starts in 3 days", "started 5 days ago").
+function relativeDay(dateStr) {
+  if (!dateStr) return '—';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr); d.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return 'today';
+  if (diff > 0) return `in ${diff} day${diff === 1 ? '' : 's'}`;
+  return `${Math.abs(diff)} day${Math.abs(diff) === 1 ? '' : 's'} ago`;
+}
+
+// Format a date as "Mon DD" or "—" if missing.
+function fmtShortDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Map status code to pretty label.
+const START_STATUS_LABELS = {
+  joined: 'Joined',
+  delayed_start: 'Delayed start',
+  no_show: 'No-show',
+  withdrew_pre_start: 'Withdrew before start',
+};
+const PROBATION_STATUS_LABELS = {
+  passed: 'Passed',
+  failed: 'Failed',
+  extended: 'Extended',
+  resigned_during: 'Resigned during',
+  pending: 'Pending review',
+};
+const EXIT_INITIATOR_LABELS = {
+  employee: 'Employee resigned',
+  company: 'Company-initiated',
+};
+
+// Build a chip from a status code.
+function statusChip(code, labels) {
+  if (!code || code === 'pending') return `<span class="chip chip-gray">${labels[code] || 'Not logged'}</span>`;
+  const goodCodes  = new Set(['joined', 'passed']);
+  const badCodes   = new Set(['no_show', 'failed', 'resigned_during', 'withdrew_pre_start']);
+  const warnCodes  = new Set(['delayed_start', 'extended']);
+  let cls = 'chip-gray';
+  if (goodCodes.has(code)) cls = 'chip-green';
+  else if (badCodes.has(code)) cls = 'chip-red';
+  else if (warnCodes.has(code)) cls = 'chip-amber';
+  return `<span class="chip ${cls}">${labels[code] || code}</span>`;
+}
+
+// Resolve display info for an onboarding row (candidate name, req, etc.) so
+// the table doesn't have to re-look-up everywhere.
+function enrichOnboarding(o) {
+  // Use applicationId to find matching candidate (more reliable than candidateId
+  // since candidate could have been deleted, but app should still resolve)
+  const cand = candidates.find(c => c._appDbId === o.applicationId);
+  const req  = requisitions.find(r => r._dbId === o.requisitionId)
+            || (cand && requisitions.find(r => r.id === cand.reqId));
+  return {
+    ...o,
+    candidateName: cand?.name || 'Unknown',
+    candidateId: cand?.id || null,
+    candDbId: cand?._dbId || o.candidateId,
+    reqTitle: req?.jobTitle || req?.position_title || '—',
+    reqCode: req?.code || req?.reqCode || '—',
+    reqId: req?.id || null,
+    intendedRel: relativeDay(o.intendedStartDate),
+    probationRel: relativeDay(o.probationEndDate),
+  };
+}
+
+function renderOnboarding() {
+  const main = document.getElementById('mainView');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const ninetyDaysAgo = new Date(today); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+  // === BUCKET ROWS BY TAB ===
+  const allEnriched = onboardings.map(enrichOnboarding);
+
+  // Tab 1: This week's starts — intended_start in last 7 days or next 14 days
+  const starts = allEnriched.filter(o => {
+    if (!o.intendedStartDate) return false;
+    const sd = new Date(o.intendedStartDate);
+    const daysFromToday = (sd - today) / 86400000;
+    return daysFromToday >= -30 && daysFromToday <= 14;
+  }).sort((a, b) => new Date(a.intendedStartDate) - new Date(b.intendedStartDate));
+
+  // Tab 2: Probation reviews due — probation_end_date passed, outcome still pending
+  const reviews = allEnriched.filter(o => {
+    if (!o.probationEndDate) return false;
+    if (o.probationOutcome && o.probationOutcome !== 'pending') return false;
+    return new Date(o.probationEndDate) <= today;
+  }).sort((a, b) => new Date(a.probationEndDate) - new Date(b.probationEndDate));
+
+  // Tab 3: Recent exits — exit_date in the last 90 days OR probation outcome is fail/resigned
+  const exits = allEnriched.filter(o => {
+    if (o.exitDate && new Date(o.exitDate) >= ninetyDaysAgo) return true;
+    if (['failed', 'resigned_during'].includes(o.probationOutcome) &&
+        o.probationLoggedAt && new Date(o.probationLoggedAt) >= ninetyDaysAgo) return true;
+    return false;
+  }).sort((a, b) => {
+    const ad = new Date(a.exitDate || a.probationLoggedAt || 0);
+    const bd = new Date(b.exitDate || b.probationLoggedAt || 0);
+    return bd - ad;  // newest first
+  });
+
+  // === RENDER ===
+  const tabBtn = (id, label, count) => `
+    <button class="role-btn ${onboardingTab === id ? 'active' : ''}"
+            onclick="setOnboardingTab('${id}')" style="margin-right: 0.5rem;">
+      ${label}${count > 0 ? ` <span style="display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; background:rgba(0,0,0,0.08); border-radius:9px; font-size:11px; font-weight:600;">${count}</span>` : ''}
+    </button>`;
+
+  let body = '';
+  if (onboardingTab === 'starts') {
+    body = renderOnboardingStartsTab(starts);
+  } else if (onboardingTab === 'reviews') {
+    body = renderOnboardingReviewsTab(reviews);
+  } else if (onboardingTab === 'exits') {
+    body = renderOnboardingExitsTab(exits);
+  }
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Hires &amp; Onboarding</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">Track post-offer lifecycle: day 1 status, probation outcomes, and exits.</p>
+
+      <div class="card" style="padding: 1rem; margin-bottom: 1rem;">
+        <div style="display:flex; align-items:center; gap:0.25rem; flex-wrap:wrap;">
+          ${tabBtn('starts',  'This week\u2019s starts', starts.filter(o => !o.startStatus).length)}
+          ${tabBtn('reviews', 'Probation reviews due', reviews.length)}
+          ${tabBtn('exits',   'Recent exits', exits.length)}
+        </div>
+      </div>
+
+      ${body}
+    </div>
+  `;
+}
+
+// === Tab renderers ==========================================================
+
+function renderOnboardingStartsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No upcoming starts.</div>
+      <div style="font-size: 12px;">When a candidate's offer is accepted, they appear here so the recruiter can log day-1 status.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => {
+    const overdue = !o.startStatus && new Date(o.intendedStartDate) < new Date();
+    const rowStyle = overdue ? 'background: #fff8e1;' : '';
+    return `<tr style="${rowStyle}">
+      <td><strong>${o.candidateName}</strong></td>
+      <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+      <td>${fmtShortDate(o.intendedStartDate)}<div class="text-xs text-muted">${o.intendedRel}</div></td>
+      <td>${o.startStatus ? statusChip(o.startStatus, START_STATUS_LABELS) : '<span class="chip chip-amber">Pending</span>'}</td>
+      <td style="text-align:right;">
+        <button class="btn btn-secondary btn-sm" onclick="openLogDay1('${o._dbId}')">${o.startStatus ? 'Update' : 'Log day 1'}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Candidate</th><th>Position</th><th>Intended start</th><th>Day-1 status</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderOnboardingReviewsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No probation reviews due.</div>
+      <div style="font-size: 12px;">When a hire's 30-day probation period ends, the review appears here for the HRBP to log the outcome.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => {
+    const overdueDays = Math.max(0, Math.floor((new Date() - new Date(o.probationEndDate)) / 86400000));
+    return `<tr>
+      <td><strong>${o.candidateName}</strong></td>
+      <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+      <td>${fmtShortDate(o.actualStartDate || o.intendedStartDate)}</td>
+      <td>${fmtShortDate(o.probationEndDate)}
+        ${overdueDays > 0 ? `<div class="text-xs" style="color:var(--blaze, #e0592a); font-weight:500;">${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue</div>` : ''}
+      </td>
+      <td style="text-align:right;">
+        <button class="btn btn-primary btn-sm" onclick="openLogProbation('${o._dbId}')">Log outcome</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Employee</th><th>Position</th><th>Started</th><th>Probation ends</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderOnboardingExitsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No exits in the last 90 days.</div>
+      <div style="font-size: 12px;">Hopefully it stays that way. When someone leaves during or after probation, log the exit here.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => `<tr>
+    <td><strong>${o.candidateName}</strong></td>
+    <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+    <td>${fmtShortDate(o.exitDate || o.probationLoggedAt)}</td>
+    <td>${statusChip(o.probationOutcome, PROBATION_STATUS_LABELS)}</td>
+    <td>${o.exitInitiator ? EXIT_INITIATOR_LABELS[o.exitInitiator] : '—'}</td>
+    <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${o.exitReason || ''}">
+      ${o.exitReason || '—'}
+    </td>
+    <td style="text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="openLogExit('${o._dbId}')">Edit</button>
+    </td>
+  </tr>`).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Person</th><th>Position</th><th>Exit date</th><th>Probation</th><th>Initiator</th><th>Reason</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function setOnboardingTab(tab) {
+  onboardingTab = tab;
+  render();
+}
+
+// === Modal forms ============================================================
+
+function openLogDay1(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Log day 1 — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle} · Intended start: ${fmtShortDate(o.intendedStartDate)}</p>
+
+    <div class="form-group">
+      <label class="required">Status</label>
+      <select id="day1Status" onchange="onDay1StatusChange()">
+        <option value="">— select —</option>
+        <option value="joined" ${o.startStatus === 'joined' ? 'selected' : ''}>Joined as planned</option>
+        <option value="delayed_start" ${o.startStatus === 'delayed_start' ? 'selected' : ''}>Joined late (delayed start)</option>
+        <option value="no_show" ${o.startStatus === 'no_show' ? 'selected' : ''}>No-show</option>
+        <option value="withdrew_pre_start" ${o.startStatus === 'withdrew_pre_start' ? 'selected' : ''}>Withdrew before start date</option>
+      </select>
+    </div>
+    <div class="form-group" id="actualStartGroup" style="${o.startStatus === 'joined' || o.startStatus === 'delayed_start' ? '' : 'display:none;'}">
+      <label>Actual start date</label>
+      <input type="date" id="actualStart" value="${o.actualStartDate || o.intendedStartDate || ''}">
+      <div class="text-xs text-muted">If different from intended start.</div>
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="day1Notes" rows="2" placeholder="Optional context (e.g. 'visa delay', 'replaced by candidate B')">${o.notes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogDay1('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+function onDay1StatusChange() {
+  const status = document.getElementById('day1Status').value;
+  const grp = document.getElementById('actualStartGroup');
+  grp.style.display = (status === 'joined' || status === 'delayed_start') ? '' : 'none';
+}
+
+async function submitLogDay1(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const status = document.getElementById('day1Status').value;
+  if (!status) { alert('Pick a status'); return; }
+  o.startStatus = status;
+  o.startLoggedAt = new Date().toISOString();
+  o.startLoggedBy = currentAuthUser?.id || null;
+  if (status === 'joined' || status === 'delayed_start') {
+    o.actualStartDate = document.getElementById('actualStart').value || o.intendedStartDate;
+    // If actual start differs from intended, recompute probation_end_date
+    if (o.actualStartDate) {
+      const probEnd = new Date(o.actualStartDate);
+      probEnd.setDate(probEnd.getDate() + 30);
+      o.probationEndDate = probEnd.toISOString().slice(0, 10);
+    }
+  } else {
+    o.actualStartDate = null;
+    // No-show / withdrew = probation outcome doesn't apply
+    o.probationOutcome = null;
+  }
+  o.notes = document.getElementById('day1Notes').value;
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Day 1 status logged', false);
+    render();
+  } catch (e) {
+    console.error('day1 save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+function openLogProbation(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Log probation outcome — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle} · Started ${fmtShortDate(o.actualStartDate || o.intendedStartDate)} · Probation ended ${fmtShortDate(o.probationEndDate)}</p>
+
+    <div class="form-group">
+      <label class="required">Outcome</label>
+      <select id="probOutcome" onchange="onProbOutcomeChange()">
+        <option value="">— select —</option>
+        <option value="passed" ${o.probationOutcome === 'passed' ? 'selected' : ''}>Passed</option>
+        <option value="failed" ${o.probationOutcome === 'failed' ? 'selected' : ''}>Failed (terminated)</option>
+        <option value="extended" ${o.probationOutcome === 'extended' ? 'selected' : ''}>Extended</option>
+        <option value="resigned_during" ${o.probationOutcome === 'resigned_during' ? 'selected' : ''}>Employee resigned</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="probEndGroup" style="${o.probationOutcome === 'extended' ? '' : 'display:none;'}">
+      <label class="required">New probation end date</label>
+      <input type="date" id="newProbEnd" value="${o.probationEndDate || ''}">
+    </div>
+
+    <div class="form-group" id="exitGroup" style="${['failed','resigned_during'].includes(o.probationOutcome) ? '' : 'display:none;'}">
+      <label class="required">Exit date</label>
+      <input type="date" id="exitDate" value="${o.exitDate || ''}">
+      <div class="form-group" style="margin-top:0.75rem;">
+        <label>Exit reason</label>
+        <textarea id="exitReason" rows="2" placeholder="Free text — e.g. 'Performance below expectations', 'Found another job', 'Personal reasons'">${o.exitReason || ''}</textarea>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Notes for HR record</label>
+      <textarea id="probNotes" rows="2" placeholder="Optional. Required if outcome is Failed.">${o.probationNotes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogProbation('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+function onProbOutcomeChange() {
+  const v = document.getElementById('probOutcome').value;
+  document.getElementById('probEndGroup').style.display = (v === 'extended') ? '' : 'none';
+  document.getElementById('exitGroup').style.display    = (v === 'failed' || v === 'resigned_during') ? '' : 'none';
+}
+
+async function submitLogProbation(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const outcome = document.getElementById('probOutcome').value;
+  if (!outcome) { alert('Pick an outcome'); return; }
+  const notes = document.getElementById('probNotes').value.trim();
+  if (outcome === 'failed' && !notes) {
+    alert('Please add notes when marking probation as failed (required for HR record).');
+    return;
+  }
+  o.probationOutcome = outcome;
+  o.probationNotes = notes || null;
+  o.probationLoggedAt = new Date().toISOString();
+  o.probationLoggedBy = currentAuthUser?.id || null;
+  if (outcome === 'extended') {
+    const newEnd = document.getElementById('newProbEnd').value;
+    if (!newEnd) { alert('Pick a new probation end date'); return; }
+    o.probationEndDate = newEnd;
+  }
+  if (outcome === 'failed' || outcome === 'resigned_during') {
+    o.exitDate = document.getElementById('exitDate').value || null;
+    o.exitReason = document.getElementById('exitReason').value.trim() || null;
+    o.exitInitiator = (outcome === 'failed') ? 'company' : 'employee';
+  } else {
+    o.exitDate = null;
+    o.exitReason = null;
+    o.exitInitiator = null;
+  }
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Probation outcome logged', false);
+    render();
+  } catch (e) {
+    console.error('probation save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+function openLogExit(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Edit exit — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle}</p>
+
+    <div class="form-group">
+      <label class="required">Exit date</label>
+      <input type="date" id="exitDateE" value="${o.exitDate || ''}">
+    </div>
+    <div class="form-group">
+      <label class="required">Initiator</label>
+      <select id="exitInitiatorE">
+        <option value="">— select —</option>
+        <option value="employee" ${o.exitInitiator === 'employee' ? 'selected' : ''}>Employee resigned</option>
+        <option value="company" ${o.exitInitiator === 'company' ? 'selected' : ''}>Company-initiated</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Reason</label>
+      <textarea id="exitReasonE" rows="3">${o.exitReason || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogExit('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+async function submitLogExit(onboardingDbId) {
+  const o = onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const exitDate = document.getElementById('exitDateE').value;
+  const initiator = document.getElementById('exitInitiatorE').value;
+  if (!exitDate || !initiator) { alert('Exit date and initiator are required'); return; }
+  o.exitDate = exitDate;
+  o.exitInitiator = initiator;
+  o.exitReason = document.getElementById('exitReasonE').value.trim() || null;
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Exit details saved', false);
+    render();
+  } catch (e) {
+    console.error('exit save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+// ============================================================
+// END GAP 3
+// ============================================================
+
 function setView(view) {
   currentView = view;
   if (view === 'dashboard') {
@@ -6379,6 +7016,7 @@ function viewReq(id) { selectedReqId = id; currentView = 'req_detail'; render();
 function render() {
   // Top-level views available to specific roles take precedence over the role dashboard.
   if (currentView === 'jd_library') { renderJDLibrary(); return; }
+  if (currentView === 'onboarding') { renderOnboarding(); return; }
   if (currentRole === 'requester') renderRequester();
   else if (currentRole === 'hrbp') renderHRBP();
   else if (currentRole === 'function_head') renderFunctionHead();
@@ -6512,6 +7150,10 @@ Object.assign(window, {
   reviseReq, cancelRevision,
   // COI document upload
   onCOIFileSelected, viewCOI,
+  // Gap 3 — Hires & Onboarding
+  setOnboardingTab, openLogDay1, onDay1StatusChange, submitLogDay1,
+  openLogProbation, onProbOutcomeChange, submitLogProbation,
+  openLogExit, submitLogExit,
 });
 </script>
 </body>
