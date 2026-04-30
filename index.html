@@ -1298,6 +1298,9 @@ let currentAuthUser = null; // auth user
 let deptMaps = { byName: {}, byId: {} };  // name lookups for function/sub/unit
 let roleLibMaps = { byTitle: {}, byId: {} };
 let employeeMaps = { byId: {}, byCode: {}, byUserId: {}, list: [] };  // employees from master file
+// BU table — list of business units, sorted ready for dropdown rendering.
+// Loaded once at startup. Each entry: { id, code, name, sort_order, is_active }
+let businessUnits = [];
 // Lookup: real Supabase UUID → { id, name, email, role } built from tenant_members + profiles
 let realUsersByUuid = {};
 
@@ -1391,6 +1394,13 @@ function isHeadOfTA() {
   return currentRole === 'head_ta' || currentMember?.role === 'admin';
 }
 
+// BU lookup: turn a buId into its display name. Returns 'Unknown' if missing.
+// Used by detail views and lists to show BU context next to function/department.
+function getBuName(buId) {
+  if (!buId) return null;
+  return (businessUnits || []).find(b => b.id === buId)?.name || null;
+}
+
 // ============================================================
 // i18n — Translations
 // ============================================================
@@ -1479,6 +1489,8 @@ const TRANSLATIONS = {
     sec_reporting: 'Reporting structure', sec_prev_feedback: 'Previous feedback',
     // Form labels
     lbl_function: 'Function', lbl_subfunction: 'Department', lbl_unit: 'Section',
+    lbl_bu: 'Business Unit',
+    ph_select_bu: '— Select Business Unit —',
     lbl_new_role_title: 'New role title', lbl_proposed_grade: 'Proposed grade',
     lbl_jd: 'Job description', lbl_replacement: 'Replacement?',
     lbl_planned: 'Planned headcount?', lbl_justification: 'Justification',
@@ -1747,6 +1759,8 @@ const TRANSLATIONS = {
     sec_organization: 'អង្គការ', sec_req_type: 'ប្រភេទសំណើ',
     sec_reporting: 'រចនាសម្ព័ន្ធរាយការណ៍', sec_prev_feedback: 'មតិមុន',
     lbl_function: 'ផ្នែក', lbl_subfunction: 'នាយកដ្ឋាន', lbl_unit: 'ផ្នែករង',
+    lbl_bu: 'អង្គភាពអាជីវកម្ម',
+    ph_select_bu: '— ជ្រើសរើសអង្គភាពអាជីវកម្ម —',
     lbl_new_role_title: 'ចំណងជើងមុខតំណែងថ្មី', lbl_proposed_grade: 'ថ្នាក់ដែលស្នើ',
     lbl_jd: 'ការពិពណ៌នាការងារ', lbl_replacement: 'ជំនួស?',
     lbl_planned: 'ចំនួនបុគ្គលិកបានគ្រោងទុក?', lbl_justification: 'ហេតុផល',
@@ -1980,6 +1994,8 @@ function reqFromDb(row) {
     roleId: row.role_id ? roleLibMaps.byId[row.role_id]?.legacyId : null,
     roleTitle: row.job_title,
     isNewRole: !!row.is_new_role,
+    // Business Unit (top-level dimension above function)
+    buId: row.bu_id || null,
     function: fn,
     subFunction: sf,
     unit: un,
@@ -2113,6 +2129,7 @@ function reqToDb(r) {
     role_id: roleLibId,
     is_new_role: r.isNewRole,
     grade: r.grade,
+    bu_id: r.buId || null,
     department_id: fnId,
     sub_function_id: sfId,
     unit_id: unId,
@@ -2219,7 +2236,7 @@ async function loadEverything() {
   const t = currentTenantId;
 
   // Parallel fetch
-  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes] = await Promise.all([
+  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes, businessUnitsRes] = await Promise.all([
     sb.from('departments').select('*').eq('tenant_id', t),
     sb.from('role_library').select('*').eq('tenant_id', t).eq('is_active', true),
     sb.from('requisitions').select('*').eq('tenant_id', t).is('deleted_at', null).order('created_at'),
@@ -2242,6 +2259,9 @@ async function loadEverything() {
     sb.from('onboarding').select('*').eq('tenant_id', t).is('deleted_at', null),
     // Gap 2 — Periodic channel costs (e.g. "LinkedIn Recruiter Q1 = $4,500")
     sb.from('sourcing_channel_costs').select('*').eq('tenant_id', t).is('deleted_at', null).order('period_start', { ascending: false }),
+    // Business Units — top-level dimension for cross-BU reporting (e.g. ISI Steel, Brown Coffee)
+    // Sort by sort_order (ISI Group=1 first), then alphabetical by name.
+    sb.from('business_units').select('*').eq('tenant_id', t).is('deleted_at', null).eq('is_active', true).order('sort_order').order('name'),
   ]);
 
   // Build the real-users lookup from tenant_members + profiles
@@ -2408,6 +2428,9 @@ async function loadEverything() {
 
   // Gap 2 — Channel costs (periodic LinkedIn / job board / agency subscriptions, etc.)
   channelCosts = (channelCostsRes?.data || []).map(channelCostFromDb);
+
+  // Business Units — already sorted by sort_order then name from the query.
+  businessUnits = (businessUnitsRes?.data || []);
 }
 
 // Gap 3 — DB row → in-memory shape (camelCase). Symmetric with onboardingToDb.
@@ -3373,7 +3396,7 @@ function renderRequester() {
               <tbody>${onHoldOrCancelled.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${statusBadge(r.status)}</td>
                   <td style="text-align: right;">
                     ${r.status === 'on_hold' ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); resumeReq('${r.id}')">${ICONS.check} ${t('btn_resume')}</button>` : ''}
@@ -3397,7 +3420,7 @@ function renderRequester() {
               <tbody>${rejected.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${statusBadge(r.status)}</td>
                   <td><span class="text-sm text-muted">${r.rejectionReason ? (r.rejectionReason.length > 120 ? r.rejectionReason.substring(0, 120) + '…' : r.rejectionReason) : '—'}</span></td>
                 </tr>
@@ -3416,7 +3439,7 @@ function renderRequester() {
               <tbody>${closed.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${statusBadge(r.status)}</td>
                 </tr>
               `).join('')}</tbody>
@@ -3469,7 +3492,7 @@ function renderReqRow(r) {
       </td>
       <td>
         <div class="role-title">${r.roleTitle}</div>
-        <div class="role-meta">${r.function} · ${r.grade}</div>
+        <div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div>
         ${pipelineChips}
       </td>
       <td>${statusBadge(r.status)}</td>
@@ -3512,6 +3535,14 @@ function renderNewReqForm() {
           <div class="form-section-title">${t('sec_organization')}</div>
           <div class="form-section-desc">${t('sec_organization')}</div>
           
+          <div class="form-group">
+            <label class="required">${t('lbl_bu') || 'Business Unit'}</label>
+            <select id="bu" required>
+              <option value="">${t('ph_select_bu') || '— Select Business Unit —'}</option>
+              ${(businessUnits || []).map(bu => `<option value="${bu.id}" ${editingReq?.buId === bu.id ? 'selected' : ''}>${bu.name}</option>`).join('')}
+            </select>
+            <div class="text-xs text-muted">Which BU is this hire for?</div>
+          </div>
           <div class="form-group">
             <label class="required">${t('lbl_function')}</label>
             <select id="function" required onchange="updateSubFunctions()">
@@ -3938,6 +3969,8 @@ async function submitNewReq() {
 
   const roleSelect = document.getElementById('roleSelect').value;
   if (!roleSelect) { alert('Please select a role'); return; }
+  const buId = document.getElementById('bu')?.value || '';
+  if (!buId) { alert('Please select a Business Unit'); return; }
   const isRep = document.querySelector('input[name="isReplacement"]:checked');
   const isPlan = document.querySelector('input[name="isPlanned"]:checked');
   if (!isRep || !isPlan) { alert('Please answer replacement and planned headcount'); return; }
@@ -4031,6 +4064,7 @@ async function submitNewReq() {
     r.roleTitle = roleTitle;
     r.isNewRole = isNewRole;
     r.grade = grade;
+    r.buId = buId;
     r.function = document.getElementById('function').value;
     r.subFunction = document.getElementById('subFunction').value;
     r.unit = document.getElementById('unit').value;
@@ -4118,6 +4152,7 @@ async function submitNewReq() {
   // ============================================================
   const newReq = {
     id: generateReqId(), roleId, roleTitle, isNewRole, grade,
+    buId,
     function: document.getElementById('function').value,
     subFunction: document.getElementById('subFunction').value,
     unit: document.getElementById('unit').value,
@@ -4236,7 +4271,7 @@ function renderRequesterDetail(reqId) {
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
           ${r.isNewRole ? `<span class="badge badge-info"><span class="badge-dot"></span>${t('st_new_role')}</span>` : ''}
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -4254,6 +4289,7 @@ function renderRequesterDetail(reqId) {
             <div class="panel-body">
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${r.roleTitle}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_bu') || 'Business Unit'}</span><span class="detail-value">${getBuName(r.buId) || '—'}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_function')}</span><span class="detail-value">${r.function}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_subfunction')}</span><span class="detail-value">${r.subFunction}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_unit')}</span><span class="detail-value">${r.unit || '—'}</span></div>
@@ -4468,7 +4504,7 @@ function renderHRBP() {
               <tbody>${pending.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${getUserName(r.requesterId)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(r.submittedAt)}</td>
@@ -4543,7 +4579,7 @@ function renderHRBPDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -4871,7 +4907,7 @@ function renderFunctionHead() {
             <tbody>${pending.map(r => `
               <tr class="clickable" onclick="viewReq('${r.id}')">
                 <td><span class="req-id">${r.id}</span></td>
-                <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                 <td>${getUserName(r.requesterId)}</td>
                 <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
@@ -4899,7 +4935,7 @@ function renderFHDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -5029,7 +5065,7 @@ function renderCEO() {
             <tbody>${pending.map(r => `
               <tr class="clickable" onclick="viewReq('${r.id}')">
                 <td><span class="req-id">${r.id}</span> <span class="badge badge-ceo" style="margin-left: 0.3rem;">${t('st_unplanned')}</span></td>
-                <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                 <td>${getUserName(r.requesterId)}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
                 <td>${formatDate(r.fhApprovedAt)}</td>
@@ -5057,7 +5093,7 @@ function renderCEODetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           <span class="badge badge-ceo">${t('st_unplanned')}</span>
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -5204,7 +5240,7 @@ function renderHeadTA() {
               <tbody>${pending.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${getUserName(r.requesterId)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_approved')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(getStageDate(r))}</td>
@@ -5324,7 +5360,7 @@ function renderTADetail(reqId) {
         <h1>${isReassign ? t('btn_reassign') : t('btn_assign').split(' ')[0]}: ${r.roleTitle}</h1>
         <div class="detail-meta">
           ${statusBadge(r.status)}
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
@@ -5500,7 +5536,7 @@ function renderRecruiter() {
               <tbody>${heldReqs.map(r => `
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
-                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                  <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                   <td>${getUserName(r.requesterId)}</td>
                   <td>${statusBadge(r.status)}</td>
                 </tr>
@@ -5525,7 +5561,7 @@ function renderRecruiter() {
                 .map(r => `
                   <tr class="clickable" onclick="viewReq('${r.id}')">
                     <td><span class="req-id">${r.id}</span></td>
-                    <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function} · ${r.grade}</div></td>
+                    <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
                     <td>${getUserName(r.requesterId)}</td>
                     <td>${formatDate(r.closedAt || r.updatedAt)}</td>
                   </tr>
@@ -5569,7 +5605,7 @@ function renderRecruiterDetail(reqId) {
         <div class="detail-meta">
           ${statusBadge(r.status)}
           <span class="badge badge-neutral">${r.grade}</span>
-          <span class="text-xs text-muted">${[r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
+          <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
       
