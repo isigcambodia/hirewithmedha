@@ -1402,6 +1402,39 @@ function getBuName(buId) {
 }
 
 // ============================================================
+// EXEC WORKFLOW helpers
+// ============================================================
+
+// Roles that can raise reqs on behalf of execs. Used to gate the New Req
+// button on HRBP / Head of TA dashboards.
+function canRaiseReqOnBehalf() {
+  return ['hrbp', 'head_ta'].includes(currentRole) || currentMember?.role === 'admin';
+}
+
+// Returns list of employees marked as Function Head or CEO (for the
+// "On behalf of" dropdown). Sorted with CEO first.
+function getExecAuthorities() {
+  const list = (employeeMaps.list || []).filter(e => e.is_function_head || e.is_ceo);
+  // CEO first, then FHs alphabetically
+  return list.sort((a, b) => {
+    if (a.is_ceo && !b.is_ceo) return -1;
+    if (b.is_ceo && !a.is_ceo) return 1;
+    return (a.name_en || '').localeCompare(b.name_en || '');
+  });
+}
+
+// Detect if a req is an exec hire (HM is FH or CEO). Drives the routing.
+// Returns one of: 'normal', 'fh_hire' (HM is a FH), 'ceo_hire' (HM is the CEO).
+function detectExecHireType(hmEmpId) {
+  if (!hmEmpId) return 'normal';
+  const hm = (employeeMaps.list || []).find(e => e.id === hmEmpId);
+  if (!hm) return 'normal';
+  if (hm.is_ceo) return 'ceo_hire';
+  if (hm.is_function_head) return 'fh_hire';
+  return 'normal';
+}
+
+// ============================================================
 // i18n — Translations
 // ============================================================
 const TRANSLATIONS = {
@@ -1613,6 +1646,12 @@ const TRANSLATIONS = {
     nav_jd_library: 'JD Library',
     nav_onboarding: 'Hires & Onboarding',
     nav_channel_costs: 'Channel Costs',
+    nav_exec_authority: 'Exec Authority',
+    btn_new_req_on_behalf: 'New requisition (on behalf)',
+    sec_on_behalf_title: 'Raising on behalf',
+    sec_on_behalf_desc: 'You are raising this requisition as a delegate. Specify which executive (Function Head or CEO) is the actual requesting authority. Leave blank for normal reqs.',
+    lbl_on_behalf: 'On behalf of (executive)',
+    ph_on_behalf: '— None (this is a normal req I am raising for myself) —',
     title_jd_library: 'JD Library',
     sub_jd_library: 'Manage standard job descriptions for each role. JDs uploaded here will be auto-attached when a requester selects the matching role.',
     eyebrow_admin: 'Administration',
@@ -1876,6 +1915,12 @@ const TRANSLATIONS = {
     nav_jd_library: 'បណ្ណាល័យឯកសារការងារ',
     nav_onboarding: 'ការចូលធ្វើការ',
     nav_channel_costs: 'ថ្លៃដើមឆានែល',
+    nav_exec_authority: 'អ្នកគ្រប់គ្រងជាន់ខ្ពស់',
+    btn_new_req_on_behalf: 'សំណើថ្មី (ក្នុងនាមអ្នកដទៃ)',
+    sec_on_behalf_title: 'ការលើកឡើងក្នុងនាម',
+    sec_on_behalf_desc: 'អ្នកកំពុងលើកសំណើនេះក្នុងនាមអ្នកដទៃ។ សូមបញ្ជាក់ថានរណាជាអ្នកគ្រប់គ្រងជាន់ខ្ពស់ដែលជាអ្នកស្នើពិតប្រាកដ។',
+    lbl_on_behalf: 'ក្នុងនាម (អ្នកគ្រប់គ្រងជាន់ខ្ពស់)',
+    ph_on_behalf: '— គ្មាន (ជាសំណើធម្មតាខ្ញុំលើកសម្រាប់ខ្លួនឯង) —',
     title_jd_library: 'បណ្ណាល័យឯកសារការងារ',
     sub_jd_library: 'គ្រប់គ្រងឯកសារពិពណ៌នាការងារស្តង់ដារសម្រាប់តួនាទីនីមួយៗ។ ឯកសារដែលផ្ទុកនៅទីនេះនឹងភ្ជាប់ស្វ័យប្រវត្តិពេលអ្នកស្នើសុំជ្រើសរើសតួនាទី។',
     eyebrow_admin: 'ការគ្រប់គ្រង',
@@ -1999,6 +2044,9 @@ function reqFromDb(row) {
     function: fn,
     subFunction: sf,
     unit: un,
+    // Exec workflow — when HRBP/Head of TA raises on behalf of a Function Head or CEO,
+    // this captures who the actual exec authority is.
+    raisedOnBehalfOfEmpId: row.raised_on_behalf_of_employee_id || null,
     grade: row.grade,
     isReplacement: !!row.is_replacement,
     isPlanned: row.is_planned !== false,
@@ -2133,6 +2181,7 @@ function reqToDb(r) {
     department_id: fnId,
     sub_function_id: sfId,
     unit_id: unId,
+    raised_on_behalf_of_employee_id: r.raisedOnBehalfOfEmpId || null,
     is_replacement: r.isReplacement,
     is_planned: r.isPlanned,
     justification: r.justification,
@@ -2254,7 +2303,7 @@ async function loadEverything() {
       .eq('tenant_id', t).eq('status', 'active'),
     // Employees: source of truth for Supervisor/HM pickers. Includes people
     // without logins (most of the 745). Name resolution + dropdowns pull from here.
-    sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, company_email, user_id, company').eq('tenant_id', t).eq('status', 'Active').order('name_en'),
+    sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, company_email, user_id, company, is_function_head, is_ceo').eq('tenant_id', t).eq('status', 'Active').order('name_en'),
     // Gap 3 — Onboarding records. Always fetched (table may be empty initially).
     sb.from('onboarding').select('*').eq('tenant_id', t).is('deleted_at', null),
     // Gap 2 — Periodic channel costs (e.g. "LinkedIn Recruiter Q1 = $4,500")
@@ -3190,6 +3239,7 @@ function renderHeader() {
       adminNav.style.display = '';
       const onLibrary = currentView === 'jd_library';
       const onCosts   = currentView === 'channel_costs';
+      const onExec    = currentView === 'exec_authority';
       // If we're on a sub-view, show "← Dashboard" for that one button. The other
       // buttons are still navigable via their normal labels.
       adminNav.innerHTML = `
@@ -3198,6 +3248,9 @@ function renderHeader() {
         </button>
         <button class="role-btn ${onCosts ? 'active' : ''}" onclick="setView('${onCosts ? 'dashboard' : 'channel_costs'}')" style="margin-left: 0.5rem;">
           ${onCosts ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_channel_costs') || 'Channel Costs')}
+        </button>
+        <button class="role-btn ${onExec ? 'active' : ''}" onclick="setView('${onExec ? 'dashboard' : 'exec_authority'}')" style="margin-left: 0.5rem;">
+          ${onExec ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_exec_authority') || 'Exec Authority')}
         </button>
       `;
     } else {
@@ -3530,6 +3583,26 @@ function renderNewReqForm() {
       ` : ''}
       
       <form id="newReqForm" onsubmit="event.preventDefault(); submitNewReq();">
+        
+        ${canRaiseReqOnBehalf() ? `
+        <div class="form-section" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.75rem 1rem; border-radius: 4px;">
+          <div class="form-section-title">${t('sec_on_behalf_title') || 'Raising on behalf'}</div>
+          <div class="form-section-desc">${t('sec_on_behalf_desc') || 'You are raising this requisition as a delegate. Specify which executive (Function Head or CEO) is the actual requesting authority. Leave blank for normal reqs.'}</div>
+          
+          <div class="form-group">
+            <label>${t('lbl_on_behalf') || 'On behalf of (executive)'}</label>
+            <select id="onBehalfOf">
+              <option value="">${t('ph_on_behalf') || '— None (this is a normal req I am raising for myself) —'}</option>
+              ${getExecAuthorities().map(e => `
+                <option value="${e.id}" ${editingReq?.raisedOnBehalfOfEmpId === e.id ? 'selected' : ''}>
+                  ${e.name_en || e.name_kh} ${e.is_ceo ? '· CEO' : '· Function Head'}${e.position_title ? ' · ' + e.position_title : ''}
+                </option>
+              `).join('')}
+            </select>
+            <div class="text-xs text-muted">Required when the Hiring Manager below is a Function Head or the CEO.</div>
+          </div>
+        </div>
+        ` : ''}
         
         <div class="form-section">
           <div class="form-section-title">${t('sec_organization')}</div>
@@ -3971,6 +4044,8 @@ async function submitNewReq() {
   if (!roleSelect) { alert('Please select a role'); return; }
   const buId = document.getElementById('bu')?.value || '';
   if (!buId) { alert('Please select a Business Unit'); return; }
+  // Exec workflow — only HRBP/Head of TA see this field; for others it's null.
+  const onBehalfOfEmpId = document.getElementById('onBehalfOf')?.value || null;
   const isRep = document.querySelector('input[name="isReplacement"]:checked');
   const isPlan = document.querySelector('input[name="isPlanned"]:checked');
   if (!isRep || !isPlan) { alert('Please answer replacement and planned headcount'); return; }
@@ -4035,6 +4110,34 @@ async function submitNewReq() {
   const supId = supUserId || supEmpId;
   const hmId  = hmUserId  || hmEmpId;
 
+  // ============================================================
+  // EXEC WORKFLOW — detect & validate
+  // ============================================================
+  // Determine if this is an exec hire (HM is FH or CEO).
+  const execHireType = detectExecHireType(hmEmpId);
+  // Cross-validate: if HM is exec, the requester MUST specify "on behalf of"
+  // (since the exec themselves shouldn't be the requester). The exception is
+  // when the current user is the platform admin.
+  if (execHireType !== 'normal' && canRaiseReqOnBehalf() && !onBehalfOfEmpId) {
+    alert('This is an exec-level hire (Hiring Manager is a Function Head or CEO). Please pick "On behalf of" — specify which executive is the actual requesting authority.');
+    return;
+  }
+  // Sanity: regular requesters can't raise exec reqs (they don't have the
+  // "on behalf of" field, which is required). They get a clear error.
+  if (execHireType !== 'normal' && !canRaiseReqOnBehalf()) {
+    alert('This Hiring Manager is a Function Head or the CEO. Exec-level reqs must be raised by HRBP or Head of TA on behalf of the executive. Please ask your HRBP to raise this requisition.');
+    return;
+  }
+  // Sanity: if "on behalf of" is set, the named exec must actually be a FH or CEO.
+  // (Defends against stale data — e.g. someone was de-flagged after being picked.)
+  if (onBehalfOfEmpId) {
+    const execEmp = (employeeMaps.list || []).find(e => e.id === onBehalfOfEmpId);
+    if (!execEmp || (!execEmp.is_function_head && !execEmp.is_ceo)) {
+      alert('The selected "On behalf of" person is no longer marked as Function Head or CEO. Please re-select.');
+      return;
+    }
+  }
+
   // Resources validation
   const noneBox = document.getElementById('resNone');
   const pickedResources = [...document.querySelectorAll('input[name="resources"]:checked')].map(el => el.value);
@@ -4068,6 +4171,7 @@ async function submitNewReq() {
     r.function = document.getElementById('function').value;
     r.subFunction = document.getElementById('subFunction').value;
     r.unit = document.getElementById('unit').value;
+    r.raisedOnBehalfOfEmpId = onBehalfOfEmpId || null;
     r.isReplacement = isRep.value === 'yes';
     r.isPlanned = isPlan.value === 'yes';
     r.justification = document.getElementById('justification').value;
@@ -4076,9 +4180,17 @@ async function submitNewReq() {
     r.hiringManagerId = hmId;
     r.supervisorEmpId = supEmpId;
     r.hmEmpId = hmEmpId;
-    r.approvalPath = isUnplanned ? 'ceo_required' : 'standard';
-    // Reset approval state — the req goes back to HRBP review for re-approval
-    r.status = 'hrbp_review';
+    // Approval path:
+    //  - exec_track: HM is FH or CEO. Skip HRBP review and FH approval, go straight to CEO.
+    //  - ceo_required: unplanned hires need CEO approval after FH.
+    //  - standard: HRBP -> FH (no CEO).
+    if (execHireType !== 'normal') {
+      r.approvalPath = 'exec_track';
+      r.status = 'ceo_approval';   // skip HRBP + FH, go directly to CEO
+    } else {
+      r.approvalPath = isUnplanned ? 'ceo_required' : 'standard';
+      r.status = 'hrbp_review';
+    }
     r.hrbpApprovedAt = null;
     r.fhApprovedAt = null;
     r.ceoApprovedAt = null;
@@ -4156,6 +4268,7 @@ async function submitNewReq() {
     function: document.getElementById('function').value,
     subFunction: document.getElementById('subFunction').value,
     unit: document.getElementById('unit').value,
+    raisedOnBehalfOfEmpId: onBehalfOfEmpId || null,
     isReplacement: isRep.value === 'yes', isPlanned: isPlan.value === 'yes',
     justification: document.getElementById('justification').value,
     resourcesRequired,
@@ -4163,8 +4276,12 @@ async function submitNewReq() {
     immediateSupervisorId: supId, hiringManagerId: hmId, requesterId: currentUserId,
     supervisorEmpId: supEmpId, hmEmpId: hmEmpId,
     jdFilename: useLibraryJD ? (selectedRoleLib.standard_jd_filename || 'Standard JD.pdf') : jdFile.name,
-    status: 'hrbp_review',
-    approvalPath: isUnplanned ? 'ceo_required' : 'standard',
+    // Approval path & status set conditionally:
+    //  - exec_track (HM is FH or CEO): skip HRBP+FH, route directly to CEO
+    //  - ceo_required (unplanned hire): standard path with CEO at the end
+    //  - standard: HRBP -> FH (no CEO)
+    status: execHireType !== 'normal' ? 'ceo_approval' : 'hrbp_review',
+    approvalPath: execHireType !== 'normal' ? 'exec_track' : (isUnplanned ? 'ceo_required' : 'standard'),
     submittedAt: new Date().toISOString(),
     hrbpApprovedAt: null, fhApprovedAt: null, ceoApprovedAt: null,
     taAssignedAt: null, assignedRecruiters: [],
@@ -4290,6 +4407,10 @@ function renderRequesterDetail(reqId) {
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${r.roleTitle}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_bu') || 'Business Unit'}</span><span class="detail-value">${getBuName(r.buId) || '—'}</span></div>
+              ${r.raisedOnBehalfOfEmpId ? (() => {
+                const exec = (employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+                return exec ? `<div class="detail-row"><span class="detail-label">${t('lbl_on_behalf') || 'On behalf of'}</span><span class="detail-value">${exec.name_en || exec.name_kh} (${exec.is_ceo ? 'CEO' : 'Function Head'})</span></div>` : '';
+              })() : ''}
               <div class="detail-row"><span class="detail-label">${t('lbl_function')}</span><span class="detail-value">${r.function}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_subfunction')}</span><span class="detail-value">${r.subFunction}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_unit')}</span><span class="detail-value">${r.unit || '—'}</span></div>
@@ -4465,6 +4586,7 @@ function renderHRBP() {
           <h1>${t('title_req_review')}</h1>
           <p>${t('sub_hrbp')}</p>
         </div>
+        <button class="btn btn-primary" onclick="setView('new_req')">${ICONS.plus} ${t('btn_new_req_on_behalf') || 'New requisition (on behalf)'}</button>
       </div>
       
       <div class="metrics">
@@ -5035,7 +5157,12 @@ function renderCEO() {
   if (currentView === 'req_detail' && selectedReqId) { main.innerHTML = renderCEODetail(selectedReqId); return; }
   
   const pending = requisitions.filter(r => r.status === 'ceo_approval');
-  const breaches = pending.filter(r => daysSince(r.fhApprovedAt) > 5).length;
+  // For SLA calc: exec_track reqs go straight to CEO from submission (no FH step),
+  // so use submittedAt for those. Standard ceo_required reqs use fhApprovedAt.
+  const breaches = pending.filter(r => {
+    const since = r.approvalPath === 'exec_track' ? r.submittedAt : r.fhApprovedAt;
+    return daysSince(since) > 5;
+  }).length;
   
   main.innerHTML = `
     <div class="view-enter">
@@ -5096,6 +5223,16 @@ function renderCEODetail(reqId) {
           <span class="text-xs text-muted">${[getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · ")}</span>
         </div>
       </div>
+
+      ${r.approvalPath === 'exec_track' ? `
+      <div class="banner" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.85rem 1rem; border-radius: 4px; margin-bottom: 0.75rem;">
+        <strong>⚡ Exec-level requisition</strong> — this hire reports directly to a Function Head or to you.
+        ${r.raisedOnBehalfOfEmpId ? (() => {
+          const exec = (employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+          return exec ? `Raised on behalf of <strong>${exec.name_en || exec.name_kh}</strong> (${exec.is_ceo ? 'CEO' : 'Function Head'}). HRBP and FH steps were skipped — your approval is the only required gate.` : '';
+        })() : 'HRBP and FH steps were skipped per the exec-hire workflow.'}
+      </div>
+      ` : ''}
       
       <div class="banner banner-warning">
         <span class="banner-icon">${ICONS.warning}</span>
@@ -5216,6 +5353,7 @@ function renderHeadTA() {
           <h1>${t('title_team_orch')}</h1>
           <p>${t('sub_ta')}</p>
         </div>
+        <button class="btn btn-primary" onclick="setView('new_req')">${ICONS.plus} ${t('btn_new_req_on_behalf') || 'New requisition (on behalf)'}</button>
       </div>
       
       <div class="metrics">
@@ -7438,6 +7576,165 @@ async function confirmDeleteChannelCost(dbId) {
 // END GAP 2
 // ============================================================
 
+// ============================================================
+// EXEC AUTHORITY — admin page (Head of TA)
+// ============================================================
+// Lets Head of TA / admin mark which employees are Function Heads or the CEO.
+// This drives the auto-detection in the new-req form: if the picked Hiring
+// Manager is a FH or CEO, the platform routes the req via exec_track (skip
+// HRBP+FH, go directly to CEO).
+//
+// One-time setup, rarely changes after launch.
+
+function renderExecAuthority() {
+  const main = document.getElementById('mainView');
+  if (!isHeadOfTA()) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'Head of TA access required'}</div></div>`;
+    return;
+  }
+
+  // Filter employees with roles likely to be exec — we don't list all 745 here.
+  // Show: anyone already flagged + anyone whose position_title contains 'Head', 'Chief', 'CEO', 'Director'.
+  const allEmps = employeeMaps.list || [];
+  const candidates = allEmps.filter(e =>
+    e.is_function_head || e.is_ceo ||
+    /head|chief|ceo|director|president/i.test(e.position_title || '')
+  ).sort((a, b) => {
+    // CEO first, then FHs, then candidates
+    if (a.is_ceo) return -1;
+    if (b.is_ceo) return 1;
+    if (a.is_function_head && !b.is_function_head) return -1;
+    if (b.is_function_head && !a.is_function_head) return 1;
+    return (a.name_en || '').localeCompare(b.name_en || '');
+  });
+
+  const fhCount  = allEmps.filter(e => e.is_function_head).length;
+  const ceoCount = allEmps.filter(e => e.is_ceo).length;
+
+  const rowsHtml = candidates.length === 0
+    ? `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--muted);">
+         No employees found whose title contains Head / Chief / CEO / Director / President.<br>
+         Use the search below to find any employee by name.
+       </td></tr>`
+    : candidates.map(e => `<tr>
+        <td><strong>${e.name_en || e.name_kh || '—'}</strong>
+            ${e.employee_code ? `<div class="text-xs text-muted">${e.employee_code}</div>` : ''}
+        </td>
+        <td>${e.position_title || '—'}</td>
+        <td>${e.company || '—'}</td>
+        <td style="text-align:center;">
+          <input type="checkbox" id="fh-${e.id}" ${e.is_function_head ? 'checked' : ''}
+                 ${e.is_ceo ? 'disabled' : ''}
+                 onchange="toggleFunctionHead('${e.id}', this.checked)"
+                 title="${e.is_ceo ? 'CEO is implicitly senior to Function Heads' : 'Mark as Function Head'}">
+        </td>
+        <td style="text-align:center;">
+          <input type="checkbox" id="ceo-${e.id}" ${e.is_ceo ? 'checked' : ''}
+                 onchange="toggleCeo('${e.id}', this.checked)"
+                 title="Only one person can be CEO">
+        </td>
+      </tr>`).join('');
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Exec Authority</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">
+        Mark which employees are Function Heads or the CEO. When someone picks one of these people as a Hiring Manager on a new requisition, the platform automatically routes the req via the exec workflow (skip HRBP + FH approval, go straight to the CEO).
+      </p>
+
+      <div class="form-grid-2" style="margin-bottom: 1.25rem;">
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">Function Heads</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${fhCount}</div>
+          <div class="text-xs text-muted">people marked</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">CEO</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${ceoCount}</div>
+          <div class="text-xs text-muted">${ceoCount === 0 ? 'not yet marked' : (ceoCount === 1 ? 'set' : '⚠ multiple — should be 1')}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="padding: 0.75rem 1rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <strong>Senior employee candidates</strong>
+          <div class="text-xs text-muted">Showing employees whose title suggests a senior role + everyone already flagged. Use Supabase directly to mark anyone else.</div>
+        </div>
+        <table class="data-table" style="width:100%;">
+          <thead><tr>
+            <th>Employee</th>
+            <th>Position</th>
+            <th>Company</th>
+            <th style="text-align:center; width: 110px;">Function Head</th>
+            <th style="text-align:center; width: 70px;">CEO</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// === Toggle handlers — write straight to DB on click ===
+
+async function toggleFunctionHead(empId, checked) {
+  try {
+    const { error } = await sb.from('employees')
+      .update({ is_function_head: checked })
+      .eq('id', empId);
+    if (error) throw error;
+    // Update in-memory employee record
+    const emp = (employeeMaps.list || []).find(e => e.id === empId);
+    if (emp) emp.is_function_head = checked;
+    toast(checked ? 'Marked as Function Head' : 'Unmarked', false);
+    render();  // refresh counts
+  } catch (e) {
+    console.error('toggleFunctionHead failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+    render();  // re-render to revert checkbox state
+  }
+}
+
+async function toggleCeo(empId, checked) {
+  try {
+    if (checked) {
+      // Defensive: warn if there's already a different CEO
+      const existingCeo = (employeeMaps.list || []).find(e => e.is_ceo && e.id !== empId);
+      if (existingCeo) {
+        const proceed = confirm(`${existingCeo.name_en || existingCeo.name_kh} is currently marked as CEO. There can only be one CEO. Replace them?`);
+        if (!proceed) {
+          render();  // revert checkbox
+          return;
+        }
+        // Unmark the old CEO first
+        const { error: clearErr } = await sb.from('employees')
+          .update({ is_ceo: false })
+          .eq('id', existingCeo.id);
+        if (clearErr) throw clearErr;
+        existingCeo.is_ceo = false;
+      }
+    }
+    const { error } = await sb.from('employees')
+      .update({ is_ceo: checked })
+      .eq('id', empId);
+    if (error) throw error;
+    const emp = (employeeMaps.list || []).find(e => e.id === empId);
+    if (emp) emp.is_ceo = checked;
+    toast(checked ? 'Marked as CEO' : 'Unmarked CEO', false);
+    render();
+  } catch (e) {
+    console.error('toggleCeo failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+    render();
+  }
+}
+// ============================================================
+// END EXEC WORKFLOW
+// ============================================================
+
 function setView(view) {
   currentView = view;
   if (view === 'dashboard') {
@@ -7453,6 +7750,7 @@ function render() {
   if (currentView === 'jd_library') { renderJDLibrary(); return; }
   if (currentView === 'onboarding') { renderOnboarding(); return; }
   if (currentView === 'channel_costs') { renderChannelCosts(); return; }
+  if (currentView === 'exec_authority') { renderExecAuthority(); return; }
   if (currentRole === 'requester') renderRequester();
   else if (currentRole === 'hrbp') renderHRBP();
   else if (currentRole === 'function_head') renderFunctionHead();
@@ -7593,6 +7891,8 @@ Object.assign(window, {
   // Gap 2 — Channel Costs
   openAddChannelCost, openEditChannelCost,
   submitAddChannelCost, submitEditChannelCost, confirmDeleteChannelCost,
+  // Exec workflow — Exec Authority admin
+  toggleFunctionHead, toggleCeo,
 });
 </script>
 </body>
