@@ -1317,6 +1317,11 @@ window.__debug = {
   employees: () => employeeMaps.list,
   emp: (id) => employeeMaps.list?.find(e => e.id === id),
   empByName: (name) => employeeMaps.list?.filter(e => (e.name_en || '').toLowerCase().includes(name.toLowerCase())),
+  // Auth state — to debug "requester_id is null" bug
+  authUser: () => currentAuthUser,
+  authUserId: () => currentAuthUser?.id,
+  member: () => currentMember,
+  role: () => currentRole,
 };
 
 // ============================================================
@@ -2183,6 +2188,17 @@ function reqToDb(r) {
   const hmEmpIdForDb = isNewReq
     ? (r.hmEmpId || null)
     : (r.realHmEmpId || null);
+  // Diagnostic: warn if a new req is being saved without a requester_id.
+  // Catches the auth-state bug where currentAuthUser was null at save time.
+  if (isNewReq && !requesterUuid) {
+    console.warn('[reqToDb] NEW req has no requester_id', {
+      currentAuthUser_present: !!currentAuthUser,
+      currentAuthUser_id: currentAuthUser?.id,
+      currentMember_present: !!currentMember,
+      currentMember_role: currentMember?.role,
+      r_id: r.id,
+    });
+  }
   return {
     req_code: r.id,
     job_title: r.roleTitle,
