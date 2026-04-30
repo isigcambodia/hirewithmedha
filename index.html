@@ -2144,6 +2144,12 @@ function candFromDb(row, appRow) {
     cvStoragePath: row.cv_storage_path,
     cvUploadedAt: row.cv_uploaded_at,
     notes: row.notes,
+    // Demographics — read straight from DB columns
+    gender: row.gender || null,
+    dateOfBirth: row.date_of_birth || null,
+    yearsExperience: row.years_experience ?? null,
+    educationLevel: row.education_level || null,
+    nationality: row.nationality || null,
     stage: appRow?.candidate_stage || 'sourcing',
     addedAt: appRow?.applied_at || row.created_at,
     stageChangedAt: appRow?.stage_changed_at || row.created_at,
@@ -2517,6 +2523,12 @@ async function saveSingleCandidate(c) {
     cv_filename: c.cvFilename,
     notes: c.notes,
     created_by: currentAuthUser?.id,
+    // Demographics — null if not provided
+    gender: c.gender || null,
+    date_of_birth: c.dateOfBirth || null,
+    years_experience: (c.yearsExperience === undefined || c.yearsExperience === null || c.yearsExperience === '') ? null : c.yearsExperience,
+    education_level: c.educationLevel || null,
+    nationality: c.nationality || null,
   };
   if (c._dbId) {
     const { error } = await sb.from('candidates').update(candPayload).eq('id', c._dbId);
@@ -2597,6 +2609,12 @@ async function saveCandidates(list) {
       cv_filename: c.cvFilename,
       notes: c.notes,
       created_by: currentAuthUser?.id,
+      // Demographics — null if not provided
+      gender: c.gender || null,
+      date_of_birth: c.dateOfBirth || null,
+      years_experience: (c.yearsExperience === undefined || c.yearsExperience === null || c.yearsExperience === '') ? null : c.yearsExperience,
+      education_level: c.educationLevel || null,
+      nationality: c.nationality || null,
     };
     if (c._dbId) {
       await sb.from('candidates').update(candPayload).eq('id', c._dbId);
@@ -5663,6 +5681,53 @@ function addCandidate(reqId) {
       <div class="form-group"><label class="required">${t('lbl_source')}</label><select id="candSource"><option>LinkedIn</option><option>Referral</option><option>Job Board</option><option>Direct Apply</option><option>Other</option></select></div>
     </div>
     <div class="form-group"><label class="required">${t('lbl_applicant_cv') || 'Applicant CV'}</label><input type="file" id="candCV" accept=".pdf"></div>
+
+    <!-- Demographics (optional, collapsed by default) -->
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Demographics <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — improves diversity reporting)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Gender</label>
+            <select id="candGender">
+              <option value="">— Not specified —</option>
+              <option value="M">Male</option>
+              <option value="F">Female</option>
+              <option value="Other">Other</option>
+              <option value="PNTS">Prefer not to say</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date of birth</label>
+            <input type="date" id="candDOB" max="${new Date(Date.now() - 18*365*86400000).toISOString().slice(0,10)}">
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Years of experience</label>
+            <input type="number" id="candYearsExp" min="0" max="70" step="1" placeholder="e.g. 5">
+          </div>
+          <div class="form-group">
+            <label>Education level</label>
+            <select id="candEducation">
+              <option value="">— Not specified —</option>
+              <option value="high_school">High School</option>
+              <option value="diploma">Diploma</option>
+              <option value="bachelor">Bachelor</option>
+              <option value="master">Master</option>
+              <option value="phd">PhD</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Nationality</label>
+          <input type="text" id="candNationality" placeholder="e.g. Cambodian" value="Cambodian">
+        </div>
+      </div>
+    </details>
+
     <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="candNotes" rows="3"></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
@@ -5678,10 +5743,25 @@ async function submitCandidate(reqId) {
   const source = document.getElementById('candSource').value;
   const cvFile = document.getElementById('candCV').files[0];
   const notes = document.getElementById('candNotes').value;
+  // Demographics (all optional — empty string converted to null)
+  const demoEl = id => document.getElementById(id);
+  const gender = demoEl('candGender')?.value || null;
+  const dob = demoEl('candDOB')?.value || null;
+  const yearsExpRaw = demoEl('candYearsExp')?.value;
+  const yearsExp = (yearsExpRaw === '' || yearsExpRaw == null) ? null : parseInt(yearsExpRaw, 10);
+  const education = demoEl('candEducation')?.value || null;
+  const nationality = (demoEl('candNationality')?.value || '').trim() || null;
   // Email is now OPTIONAL (per TA team feedback 27 Apr) — name, phone, CV remain required.
   if (!name || !phone || !cvFile) { alert('Fill required fields (name, phone, CV)'); return; }
   if (cvFile.type !== 'application/pdf') { alert('CV must be PDF'); return; }
-  const newCand = { id: generateCandidateId(), reqId, name, email, phone, source, cvFilename: cvFile.name, notes, stage: 'sourcing', addedAt: new Date().toISOString(), stageChangedAt: new Date().toISOString(), interview: null, feedback: [], preEmploymentChecks: {}, offer: null, status: 'active' };
+  const newCand = {
+    id: generateCandidateId(), reqId, name, email, phone, source,
+    cvFilename: cvFile.name, notes,
+    gender, dateOfBirth: dob, yearsExperience: yearsExp,
+    educationLevel: education, nationality,
+    stage: 'sourcing', addedAt: new Date().toISOString(), stageChangedAt: new Date().toISOString(),
+    interview: null, feedback: [], preEmploymentChecks: {}, offer: null, status: 'active'
+  };
   candidates.push(newCand);
   const ok = await persistCandidateChange(newCand, 'New candidate added to pipeline');
   if (!ok) { candidates.pop(); return; }  // roll back on failure
