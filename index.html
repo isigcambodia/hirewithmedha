@@ -7751,6 +7751,15 @@ function render() {
   if (currentView === 'onboarding') { renderOnboarding(); return; }
   if (currentView === 'channel_costs') { renderChannelCosts(); return; }
   if (currentView === 'exec_authority') { renderExecAuthority(); return; }
+  // The new req form is shared across roles that can raise reqs:
+  // requester (their own), HRBP / Head of TA (on behalf of an exec), admin.
+  // Centralizing the render here means every eligible role gets the same form.
+  if (currentView === 'new_req' && (currentRole === 'requester' || canRaiseReqOnBehalf())) {
+    const main = document.getElementById('mainView');
+    main.innerHTML = renderNewReqForm();
+    if (editingReqId) prefillEditForm(editingReqId);
+    return;
+  }
   if (currentRole === 'requester') renderRequester();
   else if (currentRole === 'hrbp') renderHRBP();
   else if (currentRole === 'function_head') renderFunctionHead();
