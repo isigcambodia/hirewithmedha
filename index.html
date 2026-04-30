@@ -2581,6 +2581,53 @@ async function saveSingleCandidate(c) {
 }
 
 // Wrapper for candidate-side mutations (moveCandidate, rejectCandidate, etc).
+/* ===== ERROR TRANSLATOR =====
+   Convert cryptic Supabase / Postgres / Storage errors into messages
+   recruiters will understand. Returns { title, hint } where hint may be ''.
+*/
+function friendlyError(e) {
+  const code = e?.code || '';
+  const msg = (e?.message || String(e) || '').toLowerCase();
+
+  // 23505 = unique constraint violation
+  if (code === '23505' || msg.includes('duplicate key value')) {
+    if (msg.includes('cand_tenant_email_uidx') || msg.includes('email')) {
+      return {
+        title: 'A candidate with this email already exists',
+        hint: 'Please check your candidate list, or use a different email if this is a different person.'
+      };
+    }
+    if (msg.includes('phone')) {
+      return { title: 'A candidate with this phone number already exists', hint: '' };
+    }
+    return { title: 'This record already exists', hint: 'Please check for duplicates and try again.' };
+  }
+
+  // Storage size limit
+  if (msg.includes('exceeded the maximum allowed size') || msg.includes('payload too large')) {
+    return {
+      title: 'CV file is too large',
+      hint: 'Please compress the PDF or upload a smaller version (under 5 MB recommended).'
+    };
+  }
+
+  // RLS / auth
+  if (msg.includes('row level security') || msg.includes('blocked by database policy')) {
+    return {
+      title: 'You don\'t have permission to do this',
+      hint: 'Contact your administrator if you believe this is an error.'
+    };
+  }
+
+  // Network / fetch
+  if (msg.includes('failed to fetch') || msg.includes('network')) {
+    return { title: 'Connection problem', hint: 'Check your internet and try again.' };
+  }
+
+  // Default — pass through original message
+  return { title: e?.message || 'Save failed', hint: '' };
+}
+
 async function persistCandidateChange(c, activityText, options = {}) {
   try {
     await saveSingleCandidate(c);
@@ -2593,7 +2640,8 @@ async function persistCandidateChange(c, activityText, options = {}) {
     return true;
   } catch (e) {
     console.error('persistCandidateChange failed:', e);
-    toast('Failed to save: ' + (e.message || e), true);
+    const f = friendlyError(e);
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
     return false;
   }
 }
@@ -5754,6 +5802,23 @@ async function submitCandidate(reqId) {
   // Email is now OPTIONAL (per TA team feedback 27 Apr) — name, phone, CV remain required.
   if (!name || !phone || !cvFile) { alert('Fill required fields (name, phone, CV)'); return; }
   if (cvFile.type !== 'application/pdf') { alert('CV must be PDF'); return; }
+  // Client-side file size check (5MB) — friendlier than letting Storage reject it.
+  const MAX_CV_BYTES = 5 * 1024 * 1024;  // 5 MB
+  if (cvFile.size > MAX_CV_BYTES) {
+    const sizeMB = (cvFile.size / 1024 / 1024).toFixed(1);
+    alert(`CV file is ${sizeMB} MB. Please upload a smaller PDF (max 5 MB).\n\nTip: Use a free online PDF compressor like ilovepdf.com or smallpdf.com.`);
+    return;
+  }
+  // Client-side dup-email check before hitting the DB — only if email was provided.
+  if (email) {
+    const emailLower = email.toLowerCase();
+    const existing = candidates.find(c => (c.email || '').toLowerCase() === emailLower);
+    if (existing) {
+      const ok = confirm(`A candidate with email "${email}" already exists in your pipeline (${existing.name}).\n\nClick OK to add anyway (different person, same email), or Cancel to review the existing candidate first.`);
+      if (!ok) return;
+      // If they want to proceed anyway, they'll hit the DB constraint and see a friendly error.
+    }
+  }
   const newCand = {
     id: generateCandidateId(), reqId, name, email, phone, source,
     cvFilename: cvFile.name, notes,
@@ -5797,7 +5862,8 @@ async function submitCandidate(reqId) {
       render();
     } catch (e) {
       console.error('CV upload failed:', e);
-      toast('Candidate saved, but CV upload failed: ' + (e.message || e), true);
+      const f = friendlyError(e);
+      toast(f.hint ? `Candidate saved, but ${f.title.toLowerCase()} — ${f.hint}` : `Candidate saved, but CV upload failed: ${f.title}`, true);
     }
   }
 }
