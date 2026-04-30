@@ -4181,12 +4181,17 @@ async function submitNewReq() {
     r.supervisorEmpId = supEmpId;
     r.hmEmpId = hmEmpId;
     // Approval path:
-    //  - exec_track: HM is FH or CEO. Skip HRBP review and FH approval, go straight to CEO.
-    //  - ceo_required: unplanned hires need CEO approval after FH.
+    //  - exec_track: HM is the CEO. Skip HRBP+FH, go directly to CEO approval.
+    //  - fh_direct:  HM is a Function Head. HRBP reviews, then routes to that
+    //                specific FH (filter applied at the queue level).
+    //  - ceo_required: unplanned hire — standard path with CEO at the end.
     //  - standard: HRBP -> FH (no CEO).
-    if (execHireType !== 'normal') {
+    if (execHireType === 'ceo_hire') {
       r.approvalPath = 'exec_track';
       r.status = 'ceo_approval';   // skip HRBP + FH, go directly to CEO
+    } else if (execHireType === 'fh_hire') {
+      r.approvalPath = 'fh_direct';
+      r.status = 'hrbp_review';    // HRBP review still required as compliance gate
     } else {
       r.approvalPath = isUnplanned ? 'ceo_required' : 'standard';
       r.status = 'hrbp_review';
@@ -4277,11 +4282,14 @@ async function submitNewReq() {
     supervisorEmpId: supEmpId, hmEmpId: hmEmpId,
     jdFilename: useLibraryJD ? (selectedRoleLib.standard_jd_filename || 'Standard JD.pdf') : jdFile.name,
     // Approval path & status set conditionally:
-    //  - exec_track (HM is FH or CEO): skip HRBP+FH, route directly to CEO
+    //  - exec_track  (HM is CEO): skip HRBP+FH, route directly to CEO
+    //  - fh_direct   (HM is FH): HRBP reviews then routes to that specific FH only
     //  - ceo_required (unplanned hire): standard path with CEO at the end
     //  - standard: HRBP -> FH (no CEO)
-    status: execHireType !== 'normal' ? 'ceo_approval' : 'hrbp_review',
-    approvalPath: execHireType !== 'normal' ? 'exec_track' : (isUnplanned ? 'ceo_required' : 'standard'),
+    status: execHireType === 'ceo_hire' ? 'ceo_approval' : 'hrbp_review',
+    approvalPath: execHireType === 'ceo_hire' ? 'exec_track'
+                : execHireType === 'fh_hire' ? 'fh_direct'
+                : (isUnplanned ? 'ceo_required' : 'standard'),
     submittedAt: new Date().toISOString(),
     hrbpApprovedAt: null, fhApprovedAt: null, ceoApprovedAt: null,
     taAssignedAt: null, assignedRecruiters: [],
@@ -5003,7 +5011,20 @@ function renderFunctionHead() {
   const main = document.getElementById('mainView');
   if (currentView === 'req_detail' && selectedReqId) { main.innerHTML = renderFHDetail(selectedReqId); return; }
   
-  const pending = requisitions.filter(r => r.status === 'fh_approval');
+  // Find which employee the current logged-in FH user is, so we can filter
+  // fh_direct reqs (only the named exec sees their own).
+  const currentEmp = (employeeMaps.list || []).find(e => e.user_id === currentAuthUser?.id);
+  const currentEmpId = currentEmp?.id || null;
+  // Admins see everything; non-admin FHs are filtered.
+  const isAdminUser = currentMember?.role === 'admin';
+
+  const pending = requisitions.filter(r => {
+    if (r.status !== 'fh_approval') return false;
+    if (r.approvalPath !== 'fh_direct') return true;  // standard / ceo_required: visible to all FHs
+    // fh_direct: only the named exec sees it (admin sees all)
+    if (isAdminUser) return true;
+    return r.raisedOnBehalfOfEmpId === currentEmpId;
+  });
   const breaches = pending.filter(r => daysSince(r.hrbpApprovedAt) > 2).length;
   
   main.innerHTML = `
@@ -5067,6 +5088,15 @@ function renderFHDetail(reqId) {
           <span>${t('banner_ceo_after_fh')}</span>
         </div>
       ` : ''}
+
+      ${r.approvalPath === 'fh_direct' ? (() => {
+        const exec = (employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+        return `
+          <div class="banner" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.85rem 1rem; border-radius: 4px; margin-bottom: 0.75rem;">
+            <strong>⚡ Direct report to you</strong> — this hire reports directly to ${exec ? (exec.name_en || exec.name_kh) : 'a Function Head'}. HRBP raised this requisition on their behalf. Your approval is the final gate before TA assignment.
+          </div>
+        `;
+      })() : ''}
       
       <div class="detail-layout">
         <div>
