@@ -1380,7 +1380,16 @@ let activities = [];
 // auto-created when an offer is accepted in offerResponse().
 let onboardings = [];
 let onboardingTab = 'starts';   // which tab is active in the Hires & Onboarding page
+// Gap 2 — Sourcing channel periodic costs (per-period: e.g. "LinkedIn Q1 = $4,500")
+let channelCosts = [];
 let currentLang = 'en';
+
+// Gap 2 — Cost fields are restricted to Head of TA (and admins, who can view-as-head_ta).
+// This helper centralizes the check so adding a new cost-related UI element
+// only requires one role gate to remember.
+function isHeadOfTA() {
+  return currentRole === 'head_ta' || currentMember?.role === 'admin';
+}
 
 // ============================================================
 // i18n — Translations
@@ -2155,6 +2164,12 @@ function candFromDb(row, appRow) {
     yearsExperience: row.years_experience ?? null,
     educationLevel: row.education_level || null,
     nationality: row.nationality || null,
+    // Gap 2 — Sourcing economics fields (per-hire variable costs)
+    agencyName: row.agency_name || null,
+    agencyFeeUsd: row.agency_fee_usd != null ? Number(row.agency_fee_usd) : null,
+    referralEmployeeId: row.referral_employee_id || null,
+    referralBonusUsd: row.referral_bonus_usd != null ? Number(row.referral_bonus_usd) : null,
+    directCostUsd: row.direct_cost_usd != null ? Number(row.direct_cost_usd) : null,
     stage: appRow?.candidate_stage || 'sourcing',
     addedAt: appRow?.applied_at || row.created_at,
     stageChangedAt: appRow?.stage_changed_at || row.created_at,
@@ -2200,7 +2215,7 @@ async function loadEverything() {
   const t = currentTenantId;
 
   // Parallel fetch
-  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes] = await Promise.all([
+  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes] = await Promise.all([
     sb.from('departments').select('*').eq('tenant_id', t),
     sb.from('role_library').select('*').eq('tenant_id', t).eq('is_active', true),
     sb.from('requisitions').select('*').eq('tenant_id', t).is('deleted_at', null).order('created_at'),
@@ -2221,6 +2236,8 @@ async function loadEverything() {
     sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, company_email, user_id, company').eq('tenant_id', t).eq('status', 'Active').order('name_en'),
     // Gap 3 — Onboarding records. Always fetched (table may be empty initially).
     sb.from('onboarding').select('*').eq('tenant_id', t).is('deleted_at', null),
+    // Gap 2 — Periodic channel costs (e.g. "LinkedIn Recruiter Q1 = $4,500")
+    sb.from('sourcing_channel_costs').select('*').eq('tenant_id', t).is('deleted_at', null).order('period_start', { ascending: false }),
   ]);
 
   // Build the real-users lookup from tenant_members + profiles
@@ -2384,6 +2401,9 @@ async function loadEverything() {
   // Gap 3 — Onboarding records. Stored DB-shape is camelCased here for consistency
   // with the rest of the in-memory model (camelCase). Empty array if none.
   onboardings = (onboardingsRes?.data || []).map(onboardingFromDb);
+
+  // Gap 2 — Channel costs (periodic LinkedIn / job board / agency subscriptions, etc.)
+  channelCosts = (channelCostsRes?.data || []).map(channelCostFromDb);
 }
 
 // Gap 3 — DB row → in-memory shape (camelCase). Symmetric with onboardingToDb.
@@ -2496,6 +2516,65 @@ async function autoCreateOnboardingForHire(candidate) {
     // Don't toast — this is a background task. Failure here shouldn't block the offer flow.
     return null;
   }
+}
+
+// ============================================================
+// GAP 2 — CHANNEL COST helpers
+// ============================================================
+// One row per "We paid $X for source Y from date A to date B".
+
+function channelCostFromDb(row) {
+  return {
+    _dbId: row.id,
+    source: row.source,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    costUsd: Number(row.cost_usd),
+    notes: row.notes,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function channelCostToDb(c) {
+  return {
+    tenant_id: currentTenantId,
+    source: c.source,
+    period_start: c.periodStart,
+    period_end: c.periodEnd,
+    cost_usd: c.costUsd,
+    notes: (c.notes && c.notes.trim()) || null,
+    created_by: c.createdBy || currentAuthUser?.id || null,
+  };
+}
+
+async function saveChannelCostRecord(c) {
+  const payload = channelCostToDb(c);
+  if (c._dbId) {
+    const { data, error } = await sb.from('sourcing_channel_costs').update(payload).eq('id', c._dbId).select();
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error('Update blocked by database policy.');
+    }
+    return c;
+  } else {
+    const { data, error } = await sb.from('sourcing_channel_costs').insert(payload).select().single();
+    if (error) throw error;
+    c._dbId = data.id;
+    c.createdAt = data.created_at;
+    c.updatedAt = data.updated_at;
+    return c;
+  }
+}
+
+async function deleteChannelCostRecord(c) {
+  // Soft delete — set deleted_at instead of hard DELETE
+  if (!c._dbId) return;
+  const { error } = await sb.from('sourcing_channel_costs')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', c._dbId);
+  if (error) throw error;
 }
 
 // ---- The drop-in replacement for saveData ----
@@ -2654,6 +2733,12 @@ async function saveSingleCandidate(c) {
     years_experience: (c.yearsExperience === undefined || c.yearsExperience === null || c.yearsExperience === '') ? null : c.yearsExperience,
     education_level: c.educationLevel || null,
     nationality: c.nationality || null,
+    // Gap 2 — Sourcing economics. All optional; coerce empty/undefined → null.
+    agency_name: (c.agencyName && String(c.agencyName).trim()) || null,
+    agency_fee_usd: (c.agencyFeeUsd === '' || c.agencyFeeUsd == null) ? null : Number(c.agencyFeeUsd),
+    referral_employee_id: c.referralEmployeeId || null,
+    referral_bonus_usd: (c.referralBonusUsd === '' || c.referralBonusUsd == null) ? null : Number(c.referralBonusUsd),
+    direct_cost_usd: (c.directCostUsd === '' || c.directCostUsd == null) ? null : Number(c.directCostUsd),
   };
   if (c._dbId) {
     const { error } = await sb.from('candidates').update(candPayload).eq('id', c._dbId);
@@ -2789,6 +2874,12 @@ async function saveCandidates(list) {
       years_experience: (c.yearsExperience === undefined || c.yearsExperience === null || c.yearsExperience === '') ? null : c.yearsExperience,
       education_level: c.educationLevel || null,
       nationality: c.nationality || null,
+      // Gap 2 — Sourcing economics
+      agency_name: (c.agencyName && String(c.agencyName).trim()) || null,
+      agency_fee_usd: (c.agencyFeeUsd === '' || c.agencyFeeUsd == null) ? null : Number(c.agencyFeeUsd),
+      referral_employee_id: c.referralEmployeeId || null,
+      referral_bonus_usd: (c.referralBonusUsd === '' || c.referralBonusUsd == null) ? null : Number(c.referralBonusUsd),
+      direct_cost_usd: (c.directCostUsd === '' || c.directCostUsd == null) ? null : Number(c.directCostUsd),
     };
     if (c._dbId) {
       await sb.from('candidates').update(candPayload).eq('id', c._dbId);
@@ -3063,17 +3154,23 @@ function renderHeader() {
     switcherEl.innerHTML = `<span class="role-btn active" style="cursor: default; opacity: 0.85;">${ROLES_LABELS[currentRole] || currentRole}</span>`;
   }
 
-  // ⭐ JD Library nav button — admin + head_ta only.
-  // Sits next to the role switcher; toggles between dashboard and library views.
+  // ⭐ JD Library + Channel Costs nav buttons — admin + head_ta only.
+  // Sits next to the role switcher; toggles between dashboard and admin views.
   const adminNav = document.getElementById('adminNav');
   if (adminNav) {
     const canAccessLibrary = isAdmin || currentMember?.role === 'head_ta';
     if (canAccessLibrary) {
       adminNav.style.display = '';
       const onLibrary = currentView === 'jd_library';
+      const onCosts   = currentView === 'channel_costs';
+      // If we're on a sub-view, show "← Dashboard" for that one button. The other
+      // buttons are still navigable via their normal labels.
       adminNav.innerHTML = `
         <button class="role-btn ${onLibrary ? 'active' : ''}" onclick="setView('${onLibrary ? 'dashboard' : 'jd_library'}')" style="margin-left: 0.5rem;">
           ${onLibrary ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_jd_library') || 'JD Library')}
+        </button>
+        <button class="role-btn ${onCosts ? 'active' : ''}" onclick="setView('${onCosts ? 'dashboard' : 'channel_costs'}')" style="margin-left: 0.5rem;">
+          ${onCosts ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_channel_costs') || 'Channel Costs')}
         </button>
       `;
     } else {
@@ -5922,6 +6019,55 @@ function addCandidate(reqId) {
       </div>
     </details>
 
+    ${isHeadOfTA() ? `
+    <!-- Sourcing costs (Head of TA only) — Gap 2 -->
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Sourcing cost <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — Head of TA)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <p class="text-xs text-muted" style="margin-bottom: 0.75rem;">
+          Cost data is associated with the source you pick above. Fill the relevant section based on how this candidate came in. Leave blank if no cost.
+        </p>
+
+        <!-- Agency block (only relevant if source = Agency) -->
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Agency name</label>
+            <input type="text" id="candAgencyName" placeholder="e.g. ABC Recruitment Co.">
+            <div class="text-xs text-muted">Only if source is "Agency".</div>
+          </div>
+          <div class="form-group">
+            <label>Agency fee (USD)</label>
+            <input type="number" id="candAgencyFee" min="0" step="0.01" placeholder="e.g. 1500">
+          </div>
+        </div>
+
+        <!-- Referral block (only relevant if source = Referral) -->
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Referred by</label>
+            <select id="candReferralEmp">
+              <option value="">— None —</option>
+              ${(employeeMaps.list || []).slice(0, 200).map(e => `<option value="${e.id}">${e.name_en || e.name_kh || ''} ${e.position_title ? '· ' + e.position_title : ''}</option>`).join('')}
+            </select>
+            <div class="text-xs text-muted">Only if source is "Referral". Showing first 200 employees.</div>
+          </div>
+          <div class="form-group">
+            <label>Referral bonus (USD)</label>
+            <input type="number" id="candReferralBonus" min="0" step="0.01" placeholder="e.g. 200">
+          </div>
+        </div>
+
+        <!-- Catch-all -->
+        <div class="form-group">
+          <label>Other direct cost (USD)</label>
+          <input type="number" id="candDirectCost" min="0" step="0.01" placeholder="e.g. 50 (background check, etc.)">
+        </div>
+      </div>
+    </details>
+    ` : ''}
+
     <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="candNotes" rows="3"></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
@@ -5945,6 +6091,15 @@ async function submitCandidate(reqId) {
   const yearsExp = (yearsExpRaw === '' || yearsExpRaw == null) ? null : parseInt(yearsExpRaw, 10);
   const education = demoEl('candEducation')?.value || null;
   const nationality = (demoEl('candNationality')?.value || '').trim() || null;
+  // Gap 2 — Sourcing economics fields. Only present when isHeadOfTA(); otherwise null.
+  const agencyName = (demoEl('candAgencyName')?.value || '').trim() || null;
+  const agencyFeeRaw = demoEl('candAgencyFee')?.value;
+  const agencyFeeUsd = (agencyFeeRaw === '' || agencyFeeRaw == null) ? null : parseFloat(agencyFeeRaw);
+  const referralEmployeeId = demoEl('candReferralEmp')?.value || null;
+  const referralBonusRaw = demoEl('candReferralBonus')?.value;
+  const referralBonusUsd = (referralBonusRaw === '' || referralBonusRaw == null) ? null : parseFloat(referralBonusRaw);
+  const directCostRaw = demoEl('candDirectCost')?.value;
+  const directCostUsd = (directCostRaw === '' || directCostRaw == null) ? null : parseFloat(directCostRaw);
   // Email is now OPTIONAL (per TA team feedback 27 Apr) — name, phone, CV remain required.
   if (!name || !phone || !cvFile) { alert('Fill required fields (name, phone, CV)'); return; }
   if (cvFile.type !== 'application/pdf') { alert('CV must be PDF'); return; }
@@ -5970,6 +6125,8 @@ async function submitCandidate(reqId) {
     cvFilename: cvFile.name, notes,
     gender, dateOfBirth: dob, yearsExperience: yearsExp,
     educationLevel: education, nationality,
+    // Gap 2 — sourcing economics
+    agencyName, agencyFeeUsd, referralEmployeeId, referralBonusUsd, directCostUsd,
     stage: 'sourcing', addedAt: new Date().toISOString(), stageChangedAt: new Date().toISOString(),
     interview: null, feedback: [], preEmploymentChecks: {}, offer: null, status: 'active'
   };
@@ -7003,6 +7160,244 @@ async function submitLogExit(onboardingDbId) {
 // END GAP 3
 // ============================================================
 
+// ============================================================
+// GAP 2 — CHANNEL COSTS PAGE (Head of TA admin)
+// ============================================================
+// Periodic cost entries: one row per "we paid $X for source Y for date range A-B".
+// Used by the dashboard to compute cost-per-hire by source.
+
+const SOURCE_OPTIONS = [
+  { value: 'linkedin',    label: 'LinkedIn'    },
+  { value: 'job_board',   label: 'Job Board'   },
+  { value: 'agency',      label: 'Agency'      },
+  { value: 'career_site', label: 'Career Site' },
+  { value: 'referral',    label: 'Referral'    },
+  { value: 'direct',      label: 'Direct'      },
+  { value: 'other',       label: 'Other'       },
+];
+const SOURCE_LABEL_MAP = Object.fromEntries(SOURCE_OPTIONS.map(s => [s.value, s.label]));
+
+function fmtUsd(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function renderChannelCosts() {
+  const main = document.getElementById('mainView');
+  if (!isHeadOfTA()) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'Head of TA access required'}</div></div>`;
+    return;
+  }
+
+  // Aggregate totals for the page header
+  const totalCost = channelCosts.reduce((sum, c) => sum + (c.costUsd || 0), 0);
+  const bySource = {};
+  channelCosts.forEach(c => {
+    bySource[c.source] = (bySource[c.source] || 0) + (c.costUsd || 0);
+  });
+
+  // Build rows
+  const rows = [...channelCosts].sort((a, b) => new Date(b.periodStart) - new Date(a.periodStart));
+  const rowsHtml = rows.length === 0
+    ? `<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--muted);">
+         No channel costs logged yet. Click "Add cost" to record a periodic charge.
+       </td></tr>`
+    : rows.map(c => `<tr>
+        <td><strong>${SOURCE_LABEL_MAP[c.source] || c.source}</strong></td>
+        <td>${fmtShortDate(c.periodStart)} → ${fmtShortDate(c.periodEnd)}</td>
+        <td class="tbl-num"><strong>${fmtUsd(c.costUsd)}</strong></td>
+        <td>${c.notes || '<span class="text-muted">—</span>'}</td>
+        <td class="text-xs text-muted">${getUserName(c.createdBy) || ''}</td>
+        <td style="text-align:right; white-space: nowrap;">
+          <button class="btn btn-secondary btn-sm" onclick="openEditChannelCost('${c._dbId}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteChannelCost('${c._dbId}')">Delete</button>
+        </td>
+      </tr>`).join('');
+
+  // Source breakdown summary
+  const sourceSummary = Object.keys(bySource).length === 0
+    ? `<div class="text-muted" style="padding: 0.5rem;">No data yet.</div>`
+    : Object.entries(bySource).sort((a, b) => b[1] - a[1]).map(([src, total]) => `
+        <div style="display: flex; justify-content: space-between; padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <span>${SOURCE_LABEL_MAP[src] || src}</span>
+          <strong>${fmtUsd(total)}</strong>
+        </div>`).join('');
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Channel Costs</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">
+        Track periodic costs (subscriptions, retainers, annual fees) for each sourcing channel. These feed the dashboard's cost-per-hire calculation alongside per-candidate costs (agency fees, referral bonuses).
+      </p>
+
+      <div class="form-grid-2" style="margin-bottom: 1.25rem;">
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">Total recorded</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${fmtUsd(totalCost)}</div>
+          <div class="text-xs text-muted">${rows.length} entries</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">By source</div>
+          ${sourceSummary}
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <strong>All entries</strong>
+          <button class="btn btn-primary" onclick="openAddChannelCost()">+ Add cost</button>
+        </div>
+        <table class="data-table" style="width:100%;">
+          <thead><tr>
+            <th>Source</th><th>Period</th><th>Amount</th><th>Notes</th><th>Logged by</th><th></th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function openAddChannelCost() {
+  const today = new Date().toISOString().slice(0, 10);
+  const oneMonthLater = new Date();
+  oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
+  const oneMonthStr = oneMonthLater.toISOString().slice(0, 10);
+  _renderChannelCostModal({
+    title: 'Add channel cost',
+    cost: { source: 'linkedin', periodStart: today, periodEnd: oneMonthStr, costUsd: '', notes: '' },
+    saveBtn: 'Save',
+    onSave: 'submitAddChannelCost'
+  });
+}
+
+function openEditChannelCost(dbId) {
+  const c = channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  _renderChannelCostModal({
+    title: 'Edit channel cost',
+    cost: c,
+    saveBtn: 'Update',
+    onSave: `submitEditChannelCost('${dbId}')`
+  });
+}
+
+function _renderChannelCostModal({ title, cost, saveBtn, onSave }) {
+  const sourceOptions = SOURCE_OPTIONS.map(s =>
+    `<option value="${s.value}" ${cost.source === s.value ? 'selected' : ''}>${s.label}</option>`
+  ).join('');
+  openModal(`
+    <div class="modal-header"><h2>${title}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">Record a cost paid for a sourcing channel over a date range.</p>
+
+    <div class="form-group">
+      <label class="required">Source</label>
+      <select id="ccSource">${sourceOptions}</select>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">Period start</label>
+        <input type="date" id="ccPeriodStart" value="${cost.periodStart || ''}">
+      </div>
+      <div class="form-group">
+        <label class="required">Period end</label>
+        <input type="date" id="ccPeriodEnd" value="${cost.periodEnd || ''}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="required">Amount (USD)</label>
+      <input type="number" id="ccAmount" min="0" step="0.01" value="${cost.costUsd ?? ''}" placeholder="e.g. 1500.00">
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="ccNotes" rows="2" placeholder="Optional context, e.g. 'Q1 2026 subscription', 'Retained search for VP role'">${cost.notes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="${onSave}">${saveBtn}</button>
+    </div>
+  `);
+}
+
+function _readChannelCostFromForm() {
+  const source = document.getElementById('ccSource').value;
+  const periodStart = document.getElementById('ccPeriodStart').value;
+  const periodEnd = document.getElementById('ccPeriodEnd').value;
+  const amountRaw = document.getElementById('ccAmount').value;
+  const notes = document.getElementById('ccNotes').value.trim();
+  if (!source || !periodStart || !periodEnd || amountRaw === '') {
+    alert('Fill all required fields (source, period start, period end, amount).');
+    return null;
+  }
+  if (new Date(periodEnd) < new Date(periodStart)) {
+    alert('Period end must be on or after period start.');
+    return null;
+  }
+  const costUsd = parseFloat(amountRaw);
+  if (isNaN(costUsd) || costUsd < 0) {
+    alert('Amount must be a non-negative number.');
+    return null;
+  }
+  return { source, periodStart, periodEnd, costUsd, notes };
+}
+
+async function submitAddChannelCost() {
+  const data = _readChannelCostFromForm();
+  if (!data) return;
+  const newRow = { ...data, createdBy: currentAuthUser?.id || null };
+  try {
+    await saveChannelCostRecord(newRow);
+    channelCosts.push(newRow);
+    closeModal();
+    toast('Channel cost saved', false);
+    render();
+  } catch (e) {
+    console.error('add channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+async function submitEditChannelCost(dbId) {
+  const c = channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  const data = _readChannelCostFromForm();
+  if (!data) return;
+  Object.assign(c, data);
+  try {
+    await saveChannelCostRecord(c);
+    closeModal();
+    toast('Channel cost updated', false);
+    render();
+  } catch (e) {
+    console.error('edit channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+async function confirmDeleteChannelCost(dbId) {
+  const c = channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  const confirmed = confirm(`Delete this entry?\n\n${SOURCE_LABEL_MAP[c.source] || c.source} · ${fmtUsd(c.costUsd)} · ${fmtShortDate(c.periodStart)} → ${fmtShortDate(c.periodEnd)}\n\nThis can't be undone (soft delete only — record stays in DB).`);
+  if (!confirmed) return;
+  try {
+    await deleteChannelCostRecord(c);
+    channelCosts = channelCosts.filter(x => x._dbId !== dbId);
+    toast('Channel cost deleted', false);
+    render();
+  } catch (e) {
+    console.error('delete channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+// ============================================================
+// END GAP 2
+// ============================================================
+
 function setView(view) {
   currentView = view;
   if (view === 'dashboard') {
@@ -7017,6 +7412,7 @@ function render() {
   // Top-level views available to specific roles take precedence over the role dashboard.
   if (currentView === 'jd_library') { renderJDLibrary(); return; }
   if (currentView === 'onboarding') { renderOnboarding(); return; }
+  if (currentView === 'channel_costs') { renderChannelCosts(); return; }
   if (currentRole === 'requester') renderRequester();
   else if (currentRole === 'hrbp') renderHRBP();
   else if (currentRole === 'function_head') renderFunctionHead();
@@ -7154,6 +7550,9 @@ Object.assign(window, {
   setOnboardingTab, openLogDay1, onDay1StatusChange, submitLogDay1,
   openLogProbation, onProbOutcomeChange, submitLogProbation,
   openLogExit, submitLogExit,
+  // Gap 2 — Channel Costs
+  openAddChannelCost, openEditChannelCost,
+  submitAddChannelCost, submitEditChannelCost, confirmDeleteChannelCost,
 });
 </script>
 </body>
