@@ -1307,6 +1307,18 @@ let realUsersByUuid = {};
 // Expose things the inline onclick handlers need
 window.sb = sb;
 
+// Debug helper — exposes runtime state for console inspection.
+// Use in console: __debug.users(), __debug.lookup('uuid-here')
+window.__debug = {
+  users: () => realUsersByUuid,
+  userCount: () => Object.keys(realUsersByUuid).length,
+  lookup: (uuid) => realUsersByUuid[uuid],
+  hrbps: () => Object.values(realUsersByUuid).filter(u => u.role === 'hrbp'),
+  employees: () => employeeMaps.list,
+  emp: (id) => employeeMaps.list?.find(e => e.id === id),
+  empByName: (name) => employeeMaps.list?.filter(e => (e.name_en || '').toLowerCase().includes(name.toLowerCase())),
+};
+
 // ============================================================
 // DATA MODEL
 // ============================================================
