@@ -3082,6 +3082,46 @@ function getUserInitials(id) {
   return u.name.split(/\s+/).map(n => n[0]).filter(Boolean).join('').substring(0, 2).toUpperCase();
 }
 
+// Resolve the role label for a user UUID. Used by getRequesterDisplay to
+// show "Tim Raksa (HRBP)" instead of just "Tim Raksa". Returns null if
+// the user / role can't be resolved.
+function getUserRoleLabel(uuid) {
+  if (!uuid) return null;
+  const u = realUsersByUuid?.[uuid];
+  if (!u?.role) return null;
+  const labels = {
+    requester: 'Requester',
+    hrbp: 'HRBP',
+    function_head: 'Function Head',
+    ceo: 'CEO',
+    head_ta: 'Head of TA',
+    recruiter: 'Recruiter',
+    admin: 'Admin',
+  };
+  return labels[u.role] || u.role;
+}
+
+// Display the requester for a requisition, with on-behalf-of context.
+// - Normal req:        "Tim Raksa (HRBP)"
+// - On-behalf-of req:  "Tim Raksa (HRBP, on behalf of Kang Samnang)"
+// - Unknown user:      "Unknown" (no role tag, no on-behalf decoration)
+function getRequesterDisplay(r) {
+  const requesterName = getUserName(r.requesterId);
+  const roleLabel = getUserRoleLabel(r.requesterId);
+  // Build "Name (RoleLabel)" or just "Name" if role unknown
+  const base = roleLabel ? `${requesterName} (${roleLabel}` : requesterName;
+  // If raised on behalf of an exec, append context to the parens
+  if (r.raisedOnBehalfOfEmpId) {
+    const exec = (employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+    const execName = exec ? (exec.name_en || exec.name_kh) : 'an executive';
+    return roleLabel
+      ? `${base}, on behalf of ${execName})`
+      : `${requesterName} (on behalf of ${execName})`;
+  }
+  // Normal req — close the parens if we opened them
+  return roleLabel ? `${base})` : requesterName;
+}
+
 // Return tenant members whose role is in the given list. Only real Supabase
 // users are considered — the demo USERS array has been retired.
 function getUsersWithRoles(roleList) {
@@ -3095,7 +3135,7 @@ function getSupervisorName(r) {
   if (r.supervisorEmpId && employeeMaps.byId[r.supervisorEmpId]) {
     return employeeMaps.byId[r.supervisorEmpId].name_en;
   }
-  return getSupervisorName(r);
+  return getUserName(r.immediateSupervisorId);
 }
 function getHiringManagerName(r) {
   if (r.hmEmpId && employeeMaps.byId[r.hmEmpId]) {
@@ -4635,7 +4675,7 @@ function renderHRBP() {
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
                   <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                  <td>${getUserName(r.requesterId)}</td>
+                  <td>${getRequesterDisplay(r)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(r.submittedAt)}</td>
                   <td><div class="sla-indicator ${getSLAClass(daysSince(r.submittedAt), 2)}"><span class="sla-value">${daysSince(r.submittedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
@@ -4676,7 +4716,7 @@ function renderHRBP() {
               <tr class="clickable" onclick="viewReq('${r.id}')">
                 <td><span class="req-id">${r.id}</span></td>
                 <td><div class="role-title">${r.roleTitle}</div></td>
-                <td>${getUserName(r.requesterId)}</td>
+                <td>${getRequesterDisplay(r)}</td>
                 <td>${statusBadge(r.status)}</td>
                 <td>${daysSince(getStageDate(r))}${t('txt_days').charAt(0)}</td>
               </tr>
@@ -4725,7 +4765,7 @@ function renderHRBPDetail(reqId) {
           <div class="panel">
             <div class="panel-header"><div class="panel-title">${t('sec_req')}</div></div>
             <div class="panel-body">
-              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getUserName(r.requesterId)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${r.roleTitle} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
@@ -5051,7 +5091,7 @@ function renderFunctionHead() {
               <tr class="clickable" onclick="viewReq('${r.id}')">
                 <td><span class="req-id">${r.id}</span></td>
                 <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                <td>${getUserName(r.requesterId)}</td>
+                <td>${getRequesterDisplay(r)}</td>
                 <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
                 <td><div class="sla-indicator ${getSLAClass(daysSince(r.hrbpApprovedAt), 2)}"><span class="sla-value">${daysSince(r.hrbpApprovedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
@@ -5103,7 +5143,7 @@ function renderFHDetail(reqId) {
           <div class="panel">
             <div class="panel-header"><div class="panel-title">${t('sec_req')}</div></div>
             <div class="panel-body">
-              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getUserName(r.requesterId)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_hrbp_approved')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${r.roleTitle} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
@@ -5223,7 +5263,7 @@ function renderCEO() {
               <tr class="clickable" onclick="viewReq('${r.id}')">
                 <td><span class="req-id">${r.id}</span> <span class="badge badge-ceo" style="margin-left: 0.3rem;">${t('st_unplanned')}</span></td>
                 <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                <td>${getUserName(r.requesterId)}</td>
+                <td>${getRequesterDisplay(r)}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
                 <td>${formatDate(r.fhApprovedAt)}</td>
                 <td><div class="sla-indicator ${getSLAClass(daysSince(r.fhApprovedAt), 5)}"><span class="sla-value">${daysSince(r.fhApprovedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 5${t('txt_days').charAt(0)}</span></div></td>
@@ -5274,7 +5314,7 @@ function renderCEODetail(reqId) {
           <div class="panel">
             <div class="panel-header"><div class="panel-title">${t('sec_approval_chain')}</div></div>
             <div class="panel-body">
-              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getUserName(r.requesterId)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('txt_approval_sent')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('txt_fh_approved')}</span><span class="detail-value">${formatDate(r.fhApprovedAt)}</span></div>
@@ -5409,7 +5449,7 @@ function renderHeadTA() {
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
                   <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                  <td>${getUserName(r.requesterId)}</td>
+                  <td>${getRequesterDisplay(r)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_approved')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(getStageDate(r))}</td>
                   <td><div class="sla-indicator ${getSLAClass(daysSince(getStageDate(r)), 2)}"><span class="sla-value">${daysSince(getStageDate(r))}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
@@ -5460,7 +5500,7 @@ function renderHeadTA() {
                   <tr class="clickable" onclick="viewReq('${r.id}')">
                     <td><span class="req-id">${r.id}</span></td>
                     <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${r.function || ''} · ${r.grade}</div></td>
-                    <td>${getUserName(r.requesterId)}</td>
+                    <td>${getRequesterDisplay(r)}</td>
                     <td>${statusBadge(r.status)}</td>
                     <td>${getCurrentOwner(r)}</td>
                     <td>${formatDate(r.submittedAt)}</td>
@@ -5539,7 +5579,7 @@ function renderTADetail(reqId) {
             <div class="panel-body">
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${r.roleTitle}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getUserName(r.requesterId)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_path')}</span><span class="detail-value">${r.approvalPath === 'ceo_required' ? t('st_ceo_approved') : t('st_standard')}</span></div>
             </div>
@@ -5705,7 +5745,7 @@ function renderRecruiter() {
                 <tr class="clickable" onclick="viewReq('${r.id}')">
                   <td><span class="req-id">${r.id}</span></td>
                   <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                  <td>${getUserName(r.requesterId)}</td>
+                  <td>${getRequesterDisplay(r)}</td>
                   <td>${statusBadge(r.status)}</td>
                 </tr>
               `).join('')}</tbody>
@@ -5730,7 +5770,7 @@ function renderRecruiter() {
                   <tr class="clickable" onclick="viewReq('${r.id}')">
                     <td><span class="req-id">${r.id}</span></td>
                     <td><div class="role-title">${r.roleTitle}</div><div class="role-meta">${[getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · ")}</div></td>
-                    <td>${getUserName(r.requesterId)}</td>
+                    <td>${getRequesterDisplay(r)}</td>
                     <td>${formatDate(r.closedAt || r.updatedAt)}</td>
                   </tr>
                 `).join('')}</tbody>
