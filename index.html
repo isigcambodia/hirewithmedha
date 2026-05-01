@@ -5822,11 +5822,13 @@ function renderRecruiterDetail(reqId) {
   const stageColors = { sourcing: '#73726c', screening: '#1e40af', interview: '#1e40af', preemployment: '#b45309', offer: '#2d7a4f' };
   
   const requester = getUser(r.requesterId);
-  const hm = getUser(r.hiringManagerId);
-  const requesterName = requester?.name || 'Unknown';
+  // Use the rich helpers so we get role tags and on-behalf-of context.
+  // Fall back to employee record for email when the platform-user lookup misses.
+  const hmEmp = r.hmEmpId ? employeeMaps.byId[r.hmEmpId] : null;
+  const requesterName = getRequesterDisplay(r);
   const requesterEmail = requester?.email || '';
-  const hmName = hm?.name || 'Unknown';
-  const hmEmail = hm?.email || '';
+  const hmName = getHiringManagerName(r);
+  const hmEmail = (hmEmp?.company_email) || getUser(r.hiringManagerId)?.email || '';
   const daysLeft = daysUntil(r.targetFillDate);
   const slaClass = daysLeft > 7 ? 'sla-good' : daysLeft > 3 ? 'sla-warning' : 'sla-bad';
   const isOnHold = r.status === 'on_hold';
