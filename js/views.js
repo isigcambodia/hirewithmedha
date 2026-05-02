@@ -1,0 +1,4674 @@
+// ============================================================
+// VIEWS — header, role views, feature modules, dispatcher
+// ============================================================
+// One big module that owns all UI rendering. Bootstrap (auth + init) stays in
+// index.html and imports the dispatcher (render, setView, viewReq) plus
+// renderHeader from this file.
+
+import { sb } from './config.js';
+import { state } from './state.js';
+import {
+  HWM_BUILD, HWM_DEBUG, dbg, esc, escJs,
+  generateReqId, generateCandidateId,
+} from './helpers.js';
+import {
+  ORG_STRUCTURE, EXISTING_ROLES, ROLES, RESOURCE_TYPES, STATUS_CONFIG, ICONS,
+} from './constants.js';
+import { TRANSLATIONS, STATUS_LABELS_KM, t, getStatusLabel } from './i18n.js';
+import {
+  reqFromDb, resolveDeptId, reqToDb, candFromDb, activityFromDb, loadEverything,
+  onboardingFromDb, onboardingToDb, saveOnboardingRecord, autoCreateOnboardingForHire,
+  channelCostFromDb, channelCostToDb, saveChannelCostRecord, deleteChannelCostRecord,
+  saveData, saveRequisitions, enrichEntityIdsFromDb, saveSingleRequisition,
+  persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
+  saveCandidates, saveActivitiesTail, loadData, toast, logActivity,
+} from './storage.js';
+import {
+  isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
+  getUser, getUserName, getUserInitials, getUserRoleLabel, getRequesterDisplay,
+  getUsersWithRoles, getSupervisorName, getHiringManagerName,
+  daysSince, daysUntil, formatDate, formatDateTime,
+  getSLAClass, getSLATarget, calculateTargetFillDate, getStageDate, getCurrentOwner,
+  statusBadge, renderResourcesBlock, openModal, closeModal, renderReqRow,
+} from './utils.js';
+
+// ============================================================
+// HEADER
+// ============================================================
+function renderHeader() {
+  const ROLES_LABELS = {
+    requester: t('role_requester'), hrbp: t('role_hrbp'),
+    function_head: t('role_function_head'), ceo: t('role_ceo'),
+    head_ta: t('role_head_ta'), recruiter: t('role_recruiter')
+  };
+
+  // ⭐ Role switcher is ONLY visible to admins (so Chandy can still preview all views
+  // while testing). Everyone else sees their single real role locked in.
+  const isAdmin = state.currentMember?.role === 'admin';
+  const switcherEl = document.getElementById('roleSwitcher');
+  if (isAdmin) {
+    switcherEl.style.display = '';
+    switcherEl.innerHTML = Object.keys(ROLES).map(r =>
+      `<button class="role-btn ${state.currentRole === r ? 'active' : ''}" onclick="switchRole('${r}')">${ROLES_LABELS[r]}</button>`
+    ).join('');
+  } else {
+    // Non-admins don't see the switcher at all — just a static badge showing their role
+    switcherEl.style.display = '';
+    switcherEl.innerHTML = `<span class="role-btn active" style="cursor: default; opacity: 0.85;">${ROLES_LABELS[state.currentRole] || state.currentRole}</span>`;
+  }
+
+  // ⭐ JD Library + Channel Costs nav buttons — admin + head_ta only.
+  // Sits next to the role switcher; toggles between dashboard and admin views.
+  const adminNav = document.getElementById('adminNav');
+  if (adminNav) {
+    const canAccessLibrary = isAdmin || state.currentMember?.role === 'head_ta';
+    if (canAccessLibrary) {
+      adminNav.style.display = '';
+      const onLibrary = state.currentView === 'jd_library';
+      const onCosts   = state.currentView === 'channel_costs';
+      const onExec    = state.currentView === 'exec_authority';
+      // If we're on a sub-view, show "← Dashboard" for that one button. The other
+      // buttons are still navigable via their normal labels.
+      adminNav.innerHTML = `
+        <button class="role-btn ${onLibrary ? 'active' : ''}" onclick="setView('${onLibrary ? 'dashboard' : 'jd_library'}')" style="margin-left: 0.5rem;">
+          ${onLibrary ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_jd_library') || 'JD Library')}
+        </button>
+        <button class="role-btn ${onCosts ? 'active' : ''}" onclick="setView('${onCosts ? 'dashboard' : 'channel_costs'}')" style="margin-left: 0.5rem;">
+          ${onCosts ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_channel_costs') || 'Channel Costs')}
+        </button>
+        <button class="role-btn ${onExec ? 'active' : ''}" onclick="setView('${onExec ? 'dashboard' : 'exec_authority'}')" style="margin-left: 0.5rem;">
+          ${onExec ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_exec_authority') || 'Exec Authority')}
+        </button>
+      `;
+    } else {
+      adminNav.style.display = 'none';
+      adminNav.innerHTML = '';
+    }
+  }
+
+  // Gap 3 — Hires & Onboarding nav. Available to all logged-in users.
+  // We deliberately don't gate by role yet (per design discussion: "build the
+  // platform people will use, then enforce roles once we see actual usage").
+  // Badges show actionable counts so people self-direct to what's relevant.
+  const onboardingNav = document.getElementById('onboardingNav');
+  if (onboardingNav) {
+    onboardingNav.style.display = '';
+    const onPage = state.currentView === 'onboarding';
+    const counts = computeOnboardingCounts();
+    const badgeTotal = counts.day1Pending + counts.probationPending;
+    const badgeHtml = badgeTotal > 0
+      ? `<span style="display:inline-block; min-width: 18px; height: 18px; line-height: 18px; padding: 0 5px; margin-left: 6px; background: var(--blaze, #e0592a); color: white; border-radius: 9px; font-size: 11px; font-weight: 700; text-align: center;">${badgeTotal}</span>`
+      : '';
+    onboardingNav.innerHTML = `
+      <button class="role-btn ${onPage ? 'active' : ''}" onclick="setView('${onPage ? 'dashboard' : 'onboarding'}')" style="margin-left: 0.5rem;">
+        ${onPage ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_onboarding') || 'Hires & Onboarding')}${badgeHtml}
+      </button>
+    `;
+  }
+
+  // ⭐ User chip now shows the REAL logged-in user's name, not the hardcoded USERS[0].
+  // Falls back to email if full_name isn't set on their profile.
+  // When an admin previews another role via the switcher, we still show the admin's
+  // OWN name — because they ARE that person; the role switch is just a view change.
+  const realName = state.currentAuthUser?.profile?.full_name
+    || state.currentAuthUser?.user_metadata?.full_name
+    || state.currentAuthUser?.email?.split('@')[0]
+    || 'User';
+  const initials = realName.split(/\s+/).map(s => s[0]?.toUpperCase() || '').slice(0, 2).join('') || 'U';
+  const hiddenDevBadge = !isAdmin;  // hide "Dev Mode" badge for real users
+
+  document.getElementById('userChip').innerHTML = `
+    <div class="user-avatar">${initials}</div>
+    <span>${realName}</span>
+    <button onclick="doLogout()" style="
+      margin-left: 0.5rem; background: transparent;
+      border: 1px solid var(--rule-dark); color: var(--ink-3);
+      padding: 4px 10px; border-radius: var(--radius-sm);
+      font-family: inherit; font-size: 11px; cursor: pointer;
+      letter-spacing: 0.04em;
+    " title="Sign out of ${state.currentAuthUser?.email || ''}">${t('btn_signout') || 'Sign out'}</button>
+  `;
+
+  // Update dev mode label — hide it entirely for non-admins
+  const devBadge = document.querySelector('.dev-badge');
+  if (devBadge) {
+    devBadge.textContent = t('dev_mode');
+    devBadge.style.display = hiddenDevBadge ? 'none' : '';
+  }
+  const brandProduct = document.querySelector('.brand-product');
+  if (brandProduct) brandProduct.textContent = t('product_name');
+  // Update lang buttons
+  document.querySelectorAll('#langToggle .lang-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', (i === 0 && state.currentLang === 'en') || (i === 1 && state.currentLang === 'km'));
+  });
+}
+
+function switchLang(lang) {
+  state.currentLang = lang;
+  document.body.classList.toggle('lang-km', lang === 'km');
+  saveData('currentLang', lang);
+  renderHeader();
+  render();
+}
+
+function switchRole(role) {
+  // ⭐ Non-admins can't switch roles. If somehow called for a non-admin, reset to their real role.
+  if (state.currentMember?.role !== 'admin') {
+    // Silently ignore — for non-admins this button shouldn't even be visible
+    return;
+  }
+  state.currentRole = role;
+  // Admin stays as themselves (state.currentUserId = their real auth UUID). The role
+  // switch only changes which dashboard view renders; filtering queries like
+  // "requisitions assigned to me" use currentAuthUser.id, not currentUserId.
+  state.currentView = 'dashboard';
+  state.selectedReqId = null;
+  renderHeader();
+  render();
+}
+
+
+// ============================================================
+// REQUESTER VIEW
+// ============================================================
+function renderRequester() {
+  const main = document.getElementById('mainView');
+  
+  if (state.currentView === 'new_req') {
+    main.innerHTML = renderNewReqForm();
+    // If we got here via "Revise & Resubmit", populate the form with the existing
+    // req's values. Done after innerHTML so DOM elements exist.
+    if (state.editingReqId) prefillEditForm(state.editingReqId);
+    return;
+  }
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderRequesterDetail(state.selectedReqId); return; }
+  
+  // ⭐ Filter by REAL requester id (Supabase auth UUID) for non-admins, so each
+  // Requester sees only the requisitions they actually submitted. Admins (i.e.
+  // you while testing) keep the legacy behaviour so the seed data stays visible.
+  const isAdmin = state.currentMember?.role === 'admin';
+  const myReqs = isAdmin
+    ? state.requisitions.filter(r => r.requesterId === state.currentUserId)        // legacy U001 match
+    : state.requisitions.filter(r => r.realRequesterId === state.currentAuthUser?.id);  // real UUID match
+  const activeReqs = myReqs.filter(r => !['closed', 'rejected', 'cancelled', 'on_hold'].includes(r.status));
+  const inApproval = activeReqs.filter(r => ['hrbp_review','fh_approval','ceo_approval','ta_assignment'].includes(r.status));
+  const sourcing = activeReqs.filter(r => r.status === 'active_sourcing');
+  const onHold = myReqs.filter(r => r.status === 'on_hold');
+  const cancelled = myReqs.filter(r => r.status === 'cancelled');
+  const closed = myReqs.filter(r => r.status === 'closed');
+  const rejected = myReqs.filter(r => r.status === 'rejected');
+  const onHoldOrCancelled = [...onHold, ...cancelled];
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_requester')}</div>
+          <h1>${t('title_your_reqs')}</h1>
+          <p>${t('sub_requester')}</p>
+        </div>
+        <button class="btn btn-primary" onclick="setView('new_req')">${ICONS.plus} ${t('btn_new_req')}</button>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">${t('metric_active')}</div>
+          <div class="metric-value">${activeReqs.length}</div>
+          <div class="metric-sub">${t('metric_in_approval').toLowerCase()}: ${inApproval.length}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_sourcing')}</div>
+          <div class="metric-value">${sourcing.length}</div>
+          <div class="metric-sub">${t('txt_rec_active')}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_on_hold')}</div>
+          <div class="metric-value">${onHold.length}</div>
+          <div class="metric-sub">${t('txt_awaiting_decision')}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_filled')}</div>
+          <div class="metric-value">${closed.length}</div>
+          <div class="metric-sub">${t('txt_successful_hires')}</div>
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">${t('sec_active_reqs')}</div>
+          <span class="text-xs text-muted">${activeReqs.length} ${t('txt_total')}</span>
+        </div>
+        ${activeReqs.length === 0 ? `
+          <div class="empty">
+            <div class="empty-icon">${ICONS.empty}</div>
+            <div class="empty-title">${t('empty_no_active')}</div>
+            <div class="empty-desc">${t('empty_no_active_desc')}</div>
+          </div>
+        ` : `
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_status')}</th><th>${t('th_owner')}</th><th>${t('th_time')}</th></tr></thead>
+              <tbody>${activeReqs.map(r => renderReqRow(r)).join('')}</tbody>
+            </table>
+          </div>
+        `}
+      </div>
+      
+      ${onHoldOrCancelled.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">${t('sec_on_hold_cancelled')}</div></div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_status')}</th><th></th></tr></thead>
+              <tbody>${onHoldOrCancelled.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${statusBadge(r.status)}</td>
+                  <td style="text-align: right;">
+                    ${r.status === 'on_hold' ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); resumeReq('${escJs(r.id)}')">${ICONS.check} ${t('btn_resume')}</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+      
+      ${rejected.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('sec_rejected_reqs')}</div>
+            <span class="text-xs text-muted">${rejected.length} ${t('txt_total')}</span>
+          </div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_status')}</th><th>${t('th_reason')}</th></tr></thead>
+              <tbody>${rejected.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${statusBadge(r.status)}</td>
+                  <td><span class="text-sm text-muted">${r.rejectionReason ? (r.rejectionReason.length > 120 ? r.rejectionReason.substring(0, 120) + '…' : r.rejectionReason) : '—'}</span></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+
+      ${closed.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">${t('sec_closed_reqs')}</div></div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_status')}</th></tr></thead>
+              <tbody>${closed.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${statusBadge(r.status)}</td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderNewReqForm() {
+  const isEditing = !!state.editingReqId;
+  const editingReq = isEditing ? state.requisitions.find(r => r.id === state.editingReqId) : null;
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="${isEditing ? `cancelRevision()` : `setView('dashboard')`}">${ICONS.back} ${t('btn_back_dash')}</button>
+      
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${isEditing ? (t('modal_revise_title') || 'Revise requisition') : t('btn_new_req')}</div>
+          <h1>${isEditing ? (t('modal_revise_title') || 'Revise requisition') : t('btn_new_req')}</h1>
+          <p>${isEditing ? (t('modal_revise_desc') || 'Address the revision notes from the approver, edit fields as needed, then resubmit. The requisition will go back to HRBP review.') : t('sub_requester')}</p>
+        </div>
+      </div>
+      
+      ${isEditing && editingReq?.revisionNotes ? `
+        <div class="panel" style="border-left: 3px solid var(--warning); margin-bottom: 1.25rem;">
+          <div class="panel-header"><div class="panel-title" style="color: var(--warning);">${t('lbl_rev_notes')}</div></div>
+          <div class="panel-body"><p>${editingReq.revisionNotes}</p></div>
+        </div>
+      ` : ''}
+      
+      <form id="newReqForm" onsubmit="event.preventDefault(); submitNewReq();">
+        
+        ${canRaiseReqOnBehalf() ? `
+        <div class="form-section" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.75rem 1rem; border-radius: 4px;">
+          <div class="form-section-title">${t('sec_on_behalf_title') || 'Raising on behalf'}</div>
+          <div class="form-section-desc">${t('sec_on_behalf_desc') || 'You are raising this requisition as a delegate. Specify which executive (Function Head or CEO) is the actual requesting authority. Leave blank for normal reqs.'}</div>
+          
+          <div class="form-group">
+            <label>${t('lbl_on_behalf') || 'On behalf of (executive)'}</label>
+            <select id="onBehalfOf">
+              <option value="">${t('ph_on_behalf') || '— None (this is a normal req I am raising for myself) —'}</option>
+              ${getExecAuthorities().map(e => `
+                <option value="${e.id}" ${editingReq?.raisedOnBehalfOfEmpId === e.id ? 'selected' : ''}>
+                  ${e.name_en || e.name_kh} ${e.is_ceo ? '· CEO' : '· Function Head'}${e.position_title ? ' · ' + e.position_title : ''}
+                </option>
+              `).join('')}
+            </select>
+            <div class="text-xs text-muted">Required when the Hiring Manager below is a Function Head or the CEO.</div>
+          </div>
+        </div>
+        ` : ''}
+        
+        <div class="form-section">
+          <div class="form-section-title">${t('sec_organization')}</div>
+          <div class="form-section-desc">${t('sec_organization')}</div>
+          
+          <div class="form-group">
+            <label class="required">${t('lbl_bu') || 'Business Unit'}</label>
+            <select id="bu" required>
+              <option value="">${t('ph_select_bu') || '— Select Business Unit —'}</option>
+              ${(state.businessUnits || []).map(bu => `<option value="${bu.id}" ${editingReq?.buId === bu.id ? 'selected' : ''}>${bu.name}</option>`).join('')}
+            </select>
+            <div class="text-xs text-muted">Which BU is this hire for?</div>
+          </div>
+          <div class="form-group">
+            <label class="required">${t('lbl_function')}</label>
+            <select id="function" required onchange="updateSubFunctions()">
+              <option value="">${t('ph_select_fn')}</option>
+              ${Object.keys(ORG_STRUCTURE).map(f => `<option value="${f}">${f}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="required">${t('lbl_subfunction')}</label>
+              <select id="subFunction" required onchange="updateUnits()" disabled>
+                <option value="">${t('ph_select_sub')}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>${t('lbl_unit')}</label>
+              <select id="unit" disabled>
+                <option value="">${t('ph_select_unit')}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-section">
+          <div class="form-section-title">${t('th_role')}</div>
+          <div class="form-section-desc">${t('ph_select_role')}</div>
+          
+          <div class="form-group">
+            <label class="required">${t('th_role')}</label>
+            <select id="roleSelect" onchange="toggleNewRole()">
+              <option value="">${t('ph_select_role')}</option>
+              ${[...EXISTING_ROLES].sort((a,b) => a.title.localeCompare(b.title) || a.grade.localeCompare(b.grade)).map(r => `<option value="${r.id}">${r.title} — ${r.function} (${r.grade})</option>`).join('')}
+              <option value="NEW">${t('ph_new_role')}</option>
+            </select>
+          </div>
+          
+          <div id="newRoleFields" class="hidden">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="required">${t('lbl_new_role_title')}</label>
+                <input type="text" id="newRoleTitle" placeholder="${t('ph_new_role_ex')}">
+              </div>
+              <div class="form-group">
+                <label class="required">${t('lbl_proposed_grade')}</label>
+                <select id="newRoleGrade">
+                  <option value="">${t('ph_select_grade')}</option>
+                  ${['G1','G2','G3','G4','G5','G6','G7','G8','G9','G10','G11','G12','G13','G14','G15'].map(g => `<option value="${g}">${g}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+          </div>
+          
+          <div class="form-group" id="jdBlock">
+            <label class="required">${t('lbl_jd')}</label>
+            <!-- Rendered dynamically by toggleNewRole() based on whether the
+                 selected role has a standard JD in the library. -->
+            <div id="jdSlot">
+              <input type="file" id="jdFile" accept=".pdf">
+              <div class="form-hint">${t('hint_jd')}</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-section">
+          <div class="form-section-title">${t('sec_req_type')}</div>
+          
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="required">${t('lbl_replacement')}</label>
+              <div class="radio-group">
+                <label class="radio-option"><input type="radio" name="isReplacement" value="yes" onchange="checkUnplanned()"> ${t('lbl_yes')}</label>
+                <label class="radio-option"><input type="radio" name="isReplacement" value="no" onchange="checkUnplanned()"> ${t('lbl_no')}</label>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="required">${t('lbl_planned')}</label>
+              <div class="radio-group">
+                <label class="radio-option"><input type="radio" name="isPlanned" value="yes" onchange="checkUnplanned()"> ${t('lbl_yes')}</label>
+                <label class="radio-option"><input type="radio" name="isPlanned" value="no" onchange="checkUnplanned()"> ${t('lbl_no')}</label>
+              </div>
+            </div>
+          </div>
+          
+          <div id="unplannedWarning" class="banner banner-warning hidden">
+            <span class="banner-icon">${ICONS.warning}</span>
+            <span>${t('banner_unplanned')}</span>
+          </div>
+          
+          <div class="form-group">
+            <label class="required">${t('lbl_justification')}</label>
+            <textarea id="justification" rows="4" required minlength="20" placeholder="${t('ph_just')}"></textarea>
+            <div class="form-hint">${t('hint_just')}</div>
+          </div>
+        </div>
+        
+        <div class="form-section">
+          <div class="form-section-title">${t('sec_resources')}</div>
+          <div class="form-group">
+            <label class="required">${t('lbl_resources')}</label>
+            <div class="form-hint" style="margin-bottom: 0.75rem;">${t('hint_resources')}</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.5rem 1rem; margin-bottom: 0.5rem;">
+              ${RESOURCE_TYPES.map(r => `
+                <label class="checkbox-row" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border: 1px solid var(--rule); border-radius: var(--radius-sm); cursor: pointer; background: var(--paper);">
+                  <input type="checkbox" name="resources" value="${r.key}" onchange="onResourceChange()">
+                  <span>${t(r.tKey)}</span>
+                </label>
+              `).join('')}
+            </div>
+            <label class="checkbox-row" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border: 1px solid var(--rule); border-radius: var(--radius-sm); cursor: pointer; background: var(--paper);">
+              <input type="checkbox" id="resNone" name="resourcesNone" onchange="onResourceChange()">
+              <span style="color: var(--ink-3);">${t('res_none')}</span>
+            </label>
+            <div id="resOtherWrap" class="hidden" style="margin-top: 0.75rem;">
+              <input type="text" id="resOtherText" maxlength="120" placeholder="${t('ph_res_other')}">
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-section">
+          <div class="form-section-title">${t('sec_reporting')}</div>
+          
+          <!-- Shared datalist for both Supervisor and Hiring Manager autocomplete.
+               Format: "Name — Position (Grade)" as the label. Actual lookup is
+               by name_en prefix match when submitted. -->
+          <datalist id="employeeOptions">
+            ${state.employeeMaps.list.map(e => {
+              const label = `${e.name_en} — ${e.position_title || ''} (${e.grade || ''})`;
+              return `<option value="${label.replace(/"/g, '&quot;')}"></option>`;
+            }).join('')}
+          </datalist>
+          
+          <div class="form-group">
+            <label class="required">${t('lbl_imm_sup')}</label>
+            <input type="text" id="immediateSupervisor" list="employeeOptions" placeholder="${t('ph_type_name') || 'Type to search by name…'}" autocomplete="off" required>
+            <div class="form-hint">${t('hint_sup')}</div>
+          </div>
+          
+          <div class="form-group">
+            <label>${t('lbl_same_hm')}</label>
+            <div class="radio-group">
+              <label class="radio-option"><input type="radio" name="sameHM" value="yes" checked onchange="toggleHMField()"> ${t('lbl_yes')}</label>
+              <label class="radio-option"><input type="radio" name="sameHM" value="no" onchange="toggleHMField()"> ${t('lbl_no')}</label>
+            </div>
+            <div class="form-hint">${t('hint_hm')}</div>
+          </div>
+          
+          <div class="form-group hidden" id="hmField">
+            <label class="required">${t('lbl_hm')}</label>
+            <input type="text" id="hiringManager" list="employeeOptions" placeholder="${t('ph_type_name') || 'Type to search by name…'}" autocomplete="off">
+          </div>
+        </div>
+        
+        <div class="flex-gap" style="justify-content: flex-end;">
+          <button type="button" class="btn btn-secondary" onclick="${isEditing ? `cancelRevision()` : `setView('dashboard')`}">${t('btn_cancel')}</button>
+          <button type="submit" class="btn btn-primary">${isEditing ? (t('btn_revise_resubmit') || 'Revise & Resubmit') : t('btn_submit_req')}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function updateSubFunctions() {
+  const fn = document.getElementById('function').value;
+  const sub = document.getElementById('subFunction');
+  sub.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
+  sub.disabled = !fn;
+  if (fn && ORG_STRUCTURE[fn]) Object.keys(ORG_STRUCTURE[fn]).forEach(s => sub.innerHTML += `<option value="${s}">${s}</option>`);
+  const unit = document.getElementById('unit');
+  unit.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
+  unit.disabled = true;
+}
+function updateUnits() {
+  const fn = document.getElementById('function').value;
+  const sub = document.getElementById('subFunction').value;
+  const unit = document.getElementById('unit');
+  unit.innerHTML = `<option value="">${t('ph_select_unit')}</option>`;
+  const sections = (fn && sub && ORG_STRUCTURE[fn]?.[sub]) || [];
+  // Sections are optional and only exist for a few departments; disable the
+  // dropdown when none are defined so the requester knows it's intentionally empty.
+  unit.disabled = sections.length === 0;
+  sections.forEach(u => unit.innerHTML += `<option value="${u}">${u}</option>`);
+}
+function toggleNewRole() {
+  const roleSelect = document.getElementById('roleSelect').value;
+  document.getElementById('newRoleFields').classList.toggle('hidden', roleSelect !== 'NEW');
+  renderJDSlot(roleSelect);
+}
+
+// Pre-fill the new-req form with existing req values when in edit mode.
+// Called after renderNewReqForm() returns its HTML, so DOM elements exist.
+// Mirrors the inverse of submitNewReq's read logic.
+function prefillEditForm(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  // Organization cascade — set function, trigger subFunction list, set sub, trigger units, set unit
+  const fnEl = document.getElementById('function');
+  if (fnEl && r.function) {
+    fnEl.value = r.function;
+    updateSubFunctions();
+    const subEl = document.getElementById('subFunction');
+    if (subEl && r.subFunction) {
+      subEl.value = r.subFunction;
+      updateUnits();
+      const unitEl = document.getElementById('unit');
+      if (unitEl && r.unit) unitEl.value = r.unit;
+    }
+  }
+  // Role
+  const roleEl = document.getElementById('roleSelect');
+  if (roleEl) {
+    if (r.roleId) {
+      roleEl.value = r.roleId;
+    } else if (r.isNewRole) {
+      roleEl.value = 'NEW';
+      const titleEl = document.getElementById('newRoleTitle');
+      const gradeEl = document.getElementById('newRoleGrade');
+      if (titleEl) titleEl.value = r.roleTitle || '';
+      if (gradeEl) gradeEl.value = r.grade || '';
+    }
+    toggleNewRole();
+  }
+  // Replacement / planned radios
+  const repRadio = document.querySelector(`input[name="isReplacement"][value="${r.isReplacement ? 'yes' : 'no'}"]`);
+  if (repRadio) repRadio.checked = true;
+  const planRadio = document.querySelector(`input[name="isPlanned"][value="${r.isPlanned ? 'yes' : 'no'}"]`);
+  if (planRadio) planRadio.checked = true;
+  if (typeof checkUnplanned === 'function') checkUnplanned();
+  // Justification
+  const justEl = document.getElementById('justification');
+  if (justEl) justEl.value = r.justification || '';
+  // Resources
+  const res = r.resourcesRequired || { items: [], other: null };
+  if (Array.isArray(res.items)) {
+    res.items.forEach(key => {
+      const cb = document.querySelector(`input[name="resources"][value="${key}"]`);
+      if (cb) cb.checked = true;
+    });
+  }
+  if (res.other) {
+    const otherInput = document.getElementById('resOtherText');
+    if (otherInput) otherInput.value = res.other;
+    const otherWrap = document.getElementById('resOtherWrap');
+    if (otherWrap) otherWrap.classList.remove('hidden');
+    const otherCb = document.querySelector(`input[name="resources"][value="other"]`);
+    if (otherCb) otherCb.checked = true;
+  }
+  if (Array.isArray(res.items) && res.items.length === 0 && !res.other) {
+    const noneCb = document.getElementById('resNone');
+    if (noneCb) noneCb.checked = true;
+  }
+  // Reporting (supervisor + HM)
+  const supEl = document.getElementById('immediateSupervisor');
+  if (supEl && r.immediateSupervisor) {
+    // Try to find the matching employee for a richer label; fall back to raw name
+    const emp = state.employeeMaps.list.find(e => e.id === r.immediateSupervisorId) ||
+                state.employeeMaps.list.find(e => e.name_en === r.immediateSupervisor);
+    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''} (${emp.grade || ''})` : r.immediateSupervisor;
+  }
+  // Same HM logic — if hiringManager is empty/same as supervisor, mark "yes"; else "no" + populate
+  const sameHMYes = document.querySelector(`input[name="sameHM"][value="yes"]`);
+  const sameHMNo = document.querySelector(`input[name="sameHM"][value="no"]`);
+  const hmField = document.getElementById('hmField');
+  const hmEl = document.getElementById('hiringManager');
+  if (r.hiringManager && r.hiringManager !== r.immediateSupervisor) {
+    if (sameHMNo) sameHMNo.checked = true;
+    if (hmField) hmField.classList.remove('hidden');
+    if (hmEl) {
+      const emp = state.employeeMaps.list.find(e => e.id === r.hiringManagerId) ||
+                  state.employeeMaps.list.find(e => e.name_en === r.hiringManager);
+      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''} (${emp.grade || ''})` : r.hiringManager;
+    }
+  } else {
+    if (sameHMYes) sameHMYes.checked = true;
+  }
+  // Target fill date — if a date input exists in the form
+  const tfEl = document.getElementById('targetFillDate');
+  if (tfEl && r.targetFillDate) {
+    tfEl.value = r.targetFillDate.slice(0, 10);  // YYYY-MM-DD
+  }
+}
+
+// Exit edit mode without resubmitting — return to the req detail.
+function cancelRevision() {
+  const id = state.editingReqId;
+  state.editingReqId = null;
+  if (id) {
+    state.selectedReqId = id;
+    setView('req_detail');
+  } else {
+    setView('dashboard');
+  }
+}
+
+// Render the JD section in the new-req form. If the selected role has a
+// standard JD in the library, show a "Attached from library" notice with a
+// View button (preview before submit). Otherwise show the manual upload input.
+function renderJDSlot(roleSelectValue) {
+  const slot = document.getElementById('jdSlot');
+  if (!slot) return;
+  // No role selected yet, or user is creating a NEW role: standard JD doesn't
+  // exist, so show the manual upload as today.
+  if (!roleSelectValue || roleSelectValue === 'NEW') {
+    slot.innerHTML = `
+      <input type="file" id="jdFile" accept=".pdf">
+      <div class="form-hint">${t('hint_jd')}</div>
+    `;
+    return;
+  }
+  const role = state.roleLibMaps.byLegacyId[roleSelectValue];
+  if (role && role.standard_jd_path) {
+    // Standard JD available — auto-attach, no upload input. Requester sees a
+    // "from library" indicator and can click View to preview before submitting.
+    slot.innerHTML = `
+      <div class="jd-viewer" style="padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
+        <div style="color: var(--success);">${ICONS.doc || '📄'}</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 500;">${t('jd_from_library') || 'Standard JD attached from library'}</div>
+          <div class="text-xs text-muted">${role.standard_jd_filename || 'Standard JD.pdf'}</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="viewLibraryJD('${role.id}')">${t('btn_view_jd') || 'View JD'}</button>
+      </div>
+    `;
+  } else {
+    // No standard JD for this role yet — fall back to manual upload.
+    slot.innerHTML = `
+      <input type="file" id="jdFile" accept=".pdf">
+      <div class="form-hint">${t('hint_jd')}</div>
+    `;
+  }
+}
+
+// Open a library-owned standard JD via signed URL (preview before submit).
+async function viewLibraryJD(roleLibraryId) {
+  const role = state.roleLibMaps.byId[roleLibraryId];
+  if (!role || !role.standard_jd_path) { toast('Standard JD not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(role.standard_jd_path, 3600);
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewLibraryJD failed:', e);
+    toast('Could not open standard JD: ' + (e.message || e), true);
+  }
+}
+function toggleHMField() { document.getElementById('hmField').classList.toggle('hidden', document.querySelector('input[name="sameHM"]:checked').value === 'yes'); }
+function onResourceChange() {
+  const noneBox = document.getElementById('resNone');
+  const resources = document.querySelectorAll('input[name="resources"]');
+  // If "None" is checked, uncheck every resource
+  if (noneBox && noneBox.checked) {
+    resources.forEach(r => { r.checked = false; });
+  }
+  // If any real resource is checked, auto-uncheck "None"
+  const anyChecked = [...resources].some(r => r.checked);
+  if (anyChecked && noneBox) noneBox.checked = false;
+  // Show/hide the "other" free-text field
+  const otherBox = document.querySelector('input[name="resources"][value="other"]');
+  const otherWrap = document.getElementById('resOtherWrap');
+  if (otherBox && otherWrap) {
+    otherWrap.classList.toggle('hidden', !otherBox.checked);
+  }
+}
+function checkUnplanned() {
+  const rep = document.querySelector('input[name="isReplacement"]:checked');
+  const plan = document.querySelector('input[name="isPlanned"]:checked');
+  document.getElementById('unplannedWarning').classList.toggle('hidden', !(rep && plan && rep.value === 'no' && plan.value === 'no'));
+}
+
+// ⭐ Fetch a short-lived signed URL for a JD and open it in a new tab.
+// The URL expires in 1 hour so even if copied/shared, exposure is time-limited.
+async function viewJD(reqDbId) {
+  if (!reqDbId) { toast('JD unavailable (legacy req)', true); return; }
+  const req = state.requisitions.find(r => r._dbId === reqDbId);
+  if (!req || !req.jdStoragePath) { toast('JD not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(req.jdStoragePath, 3600);  // 1 hour TTL
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewJD failed:', e);
+    toast('Could not open JD: ' + (e.message || e), true);
+  }
+}
+
+// ⭐ Fetch a short-lived signed URL for a CV and open it in a new tab.
+// Role-gated: CVs contain PII and should only be viewable by recruiters,
+// hiring managers, HRBPs, head TA, and admins. Requesters and function
+// heads are NOT meant to pre-evaluate candidates.
+async function viewCV(candDbId) {
+  const allowedRoles = ['admin','recruiter','hiring_manager','hrbp','head_ta'];
+  if (!allowedRoles.includes(state.currentMember?.role)) {
+    toast('You do not have permission to view CVs', true);
+    return;
+  }
+  if (!candDbId) { toast('CV unavailable (legacy candidate)', true); return; }
+  const cand = state.candidates.find(c => c._dbId === candDbId);
+  if (!cand || !cand.cvStoragePath) { toast('CV not found', true); return; }
+  try {
+    const { data, error } = await sb.storage
+      .from('hire-medha')
+      .createSignedUrl(cand.cvStoragePath, 3600);  // 1 hour TTL
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewCV failed:', e);
+    toast('Could not open CV: ' + (e.message || e), true);
+  }
+}
+
+async function submitNewReq() {
+  const isEditing = !!state.editingReqId;
+  const existingReq = isEditing ? state.requisitions.find(r => r.id === state.editingReqId) : null;
+  if (isEditing && !existingReq) {
+    alert('Requisition not found — please return to dashboard.');
+    return;
+  }
+
+  const roleSelect = document.getElementById('roleSelect').value;
+  if (!roleSelect) { alert('Please select a role'); return; }
+  const buId = document.getElementById('bu')?.value || '';
+  if (!buId) { alert('Please select a Business Unit'); return; }
+  // Exec workflow — only HRBP/Head of TA see this field; for others it's null.
+  const onBehalfOfEmpId = document.getElementById('onBehalfOf')?.value || null;
+  const isRep = document.querySelector('input[name="isReplacement"]:checked');
+  const isPlan = document.querySelector('input[name="isPlanned"]:checked');
+  if (!isRep || !isPlan) { alert('Please answer replacement and planned headcount'); return; }
+
+  // ⭐ JD handling: if the selected role has a standard JD in the library,
+  // the requester doesn't need to (and can't) upload one — we auto-attach
+  // the library path. Otherwise, the file input is present and required.
+  // EDIT MODE: if no new JD file is selected and the existing req already has
+  // a JD attached, we keep the existing one. Otherwise apply the same rules.
+  const selectedRoleLib = (roleSelect && roleSelect !== 'NEW') ? state.roleLibMaps.byLegacyId[roleSelect] : null;
+  const useLibraryJD = !!(selectedRoleLib && selectedRoleLib.standard_jd_path);
+  const jdFileEl = document.getElementById('jdFile');
+  const jdFile = jdFileEl ? jdFileEl.files[0] : null;
+  const keepExistingJD = isEditing && !jdFile && !useLibraryJD && existingReq?.jdStoragePath;
+  if (!useLibraryJD && !keepExistingJD) {
+    if (!jdFile) { alert('Please upload JD'); return; }
+    if (jdFile.type !== 'application/pdf') { alert('JD must be PDF'); return; }
+  }
+  
+  let roleTitle, grade, isNewRole, roleId;
+  if (roleSelect === 'NEW') {
+    roleTitle = document.getElementById('newRoleTitle').value.trim();
+    grade = document.getElementById('newRoleGrade').value;
+    if (!roleTitle || !grade) { alert('Fill new role details'); return; }
+    isNewRole = true; roleId = null;
+  } else {
+    const role = EXISTING_ROLES.find(r => r.id === roleSelect);
+    roleTitle = role.title; grade = role.grade; isNewRole = false; roleId = role.id;
+  }
+  
+  const sameHM = document.querySelector('input[name="sameHM"]:checked').value;
+  const supTyped = document.getElementById('immediateSupervisor').value.trim();
+  const hmTyped  = sameHM === 'yes' ? supTyped : document.getElementById('hiringManager').value.trim();
+  if (!supTyped) { alert('Select immediate supervisor'); return; }
+  if (sameHM === 'no' && !hmTyped) { alert('Select hiring manager'); return; }
+
+  // ⭐ Convert the typed label back to an employee record. Labels are
+  // "Name — Position (Grade)" — we match by label prefix. If no match is
+  // found, the user typed a freeform value we don't recognize — reject.
+  const labelFor = e => `${e.name_en} — ${e.position_title || ''} (${e.grade || ''})`;
+  const supEmp = state.employeeMaps.list.find(e => labelFor(e) === supTyped);
+  if (!supEmp) {
+    alert('Immediate supervisor must be selected from the list. Typed value "' + supTyped + '" was not found.');
+    return;
+  }
+  const hmEmp = sameHM === 'yes' ? supEmp : state.employeeMaps.list.find(e => labelFor(e) === hmTyped);
+  if (sameHM === 'no' && !hmEmp) {
+    alert('Hiring manager must be selected from the list. Typed value "' + hmTyped + '" was not found.');
+    return;
+  }
+
+  // Map the selected employees to both the employee_id (always) and the
+  // user_id (only if they have a linked login). Keep legacy supId/hmId as
+  // user UUIDs for backward-compat code paths.
+  const supEmpId = supEmp.id;
+  const hmEmpId  = hmEmp.id;
+  const supUserId = supEmp.user_id || null;
+  const hmUserId  = hmEmp.user_id || null;
+  // Legacy code expects these to be truthy strings — use the employee_id as a
+  // stable stand-in when no user_id is available. The DB save uses the real
+  // employee_id column regardless.
+  const supId = supUserId || supEmpId;
+  const hmId  = hmUserId  || hmEmpId;
+
+  // ============================================================
+  // EXEC WORKFLOW — detect & validate
+  // ============================================================
+  // Determine if this is an exec hire (HM is FH or CEO).
+  const execHireType = detectExecHireType(hmEmpId);
+  // Cross-validate: if HM is exec, the requester MUST specify "on behalf of"
+  // (since the exec themselves shouldn't be the requester). The exception is
+  // when the current user is the platform admin.
+  if (execHireType !== 'normal' && canRaiseReqOnBehalf() && !onBehalfOfEmpId) {
+    alert('This is an exec-level hire (Hiring Manager is a Function Head or CEO). Please pick "On behalf of" — specify which executive is the actual requesting authority.');
+    return;
+  }
+  // Sanity: regular requesters can't raise exec reqs (they don't have the
+  // "on behalf of" field, which is required). They get a clear error.
+  if (execHireType !== 'normal' && !canRaiseReqOnBehalf()) {
+    alert('This Hiring Manager is a Function Head or the CEO. Exec-level reqs must be raised by HRBP or Head of TA on behalf of the executive. Please ask your HRBP to raise this requisition.');
+    return;
+  }
+  // Sanity: if "on behalf of" is set, the named exec must actually be a FH or CEO.
+  // (Defends against stale data — e.g. someone was de-flagged after being picked.)
+  if (onBehalfOfEmpId) {
+    const execEmp = (state.employeeMaps.list || []).find(e => e.id === onBehalfOfEmpId);
+    if (!execEmp || (!execEmp.is_function_head && !execEmp.is_ceo)) {
+      alert('The selected "On behalf of" person is no longer marked as Function Head or CEO. Please re-select.');
+      return;
+    }
+  }
+
+  // Resources validation
+  const noneBox = document.getElementById('resNone');
+  const pickedResources = [...document.querySelectorAll('input[name="resources"]:checked')].map(el => el.value);
+  const noneTicked = !!(noneBox && noneBox.checked);
+  if (!noneTicked && pickedResources.length === 0) {
+    alert(t('err_resources_required'));
+    return;
+  }
+  const otherText = (document.getElementById('resOtherText')?.value || '').trim();
+  if (pickedResources.includes('other') && !otherText) {
+    alert(t('err_res_other'));
+    return;
+  }
+  const resourcesRequired = noneTicked
+    ? { items: [], other: null }
+    : { items: pickedResources, other: pickedResources.includes('other') ? otherText : null };
+
+  const isUnplanned = isRep.value === 'no' && isPlan.value === 'no';
+
+  // ============================================================
+  // EDIT MODE: update existing requisition in place
+  // ============================================================
+  if (isEditing) {
+    const r = existingReq;
+    // Apply edits to the in-memory object
+    r.roleId = roleId;
+    r.roleTitle = roleTitle;
+    r.isNewRole = isNewRole;
+    r.grade = grade;
+    r.buId = buId;
+    r.function = document.getElementById('function').value;
+    r.subFunction = document.getElementById('subFunction').value;
+    r.unit = document.getElementById('unit').value;
+    r.raisedOnBehalfOfEmpId = onBehalfOfEmpId || null;
+    r.isReplacement = isRep.value === 'yes';
+    r.isPlanned = isPlan.value === 'yes';
+    r.justification = document.getElementById('justification').value;
+    r.resourcesRequired = resourcesRequired;
+    r.immediateSupervisorId = supId;
+    r.hiringManagerId = hmId;
+    r.supervisorEmpId = supEmpId;
+    r.hmEmpId = hmEmpId;
+    // Approval path:
+    //  - exec_track: HM is the CEO. Skip HRBP+FH, go directly to CEO approval.
+    //  - fh_direct:  HM is a Function Head. HRBP reviews, then routes to that
+    //                specific FH (filter applied at the queue level).
+    //  - ceo_required: unplanned hire — standard path with CEO at the end.
+    //  - standard: HRBP -> FH (no CEO).
+    if (execHireType === 'ceo_hire') {
+      r.approvalPath = 'exec_track';
+      r.status = 'ceo_approval';   // skip HRBP + FH, go directly to CEO
+    } else if (execHireType === 'fh_hire') {
+      r.approvalPath = 'fh_direct';
+      r.status = 'hrbp_review';    // HRBP review still required as compliance gate
+    } else {
+      r.approvalPath = isUnplanned ? 'ceo_required' : 'standard';
+      r.status = 'hrbp_review';
+    }
+    r.hrbpApprovedAt = null;
+    r.fhApprovedAt = null;
+    r.ceoApprovedAt = null;
+    r.taAssignedAt = null;
+    r.hrbpJustification = null;
+    r.fhJustification = null;
+    r.ceoJustification = null;
+    // Keep revisionNotes for audit trail (so HRBP sees what was previously asked)
+
+    // Persist
+    try {
+      await saveSingleRequisition(r);
+    } catch (e) {
+      alert('Failed to resubmit: ' + (e.message || e));
+      return;
+    }
+
+    // JD: if a new file was provided OR the user changed roles to one with a
+    // library JD, replace the JD; otherwise keep the existing one.
+    if (r._dbId && state.currentMember?.tenant_id && (jdFile || useLibraryJD)) {
+      try {
+        const ts = Date.now();
+        let storagePath, displayName, uploadBlob, uploadContentType;
+        if (jdFile) {
+          uploadBlob = jdFile;
+          uploadContentType = 'application/pdf';
+          const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+          storagePath = `jds/${state.currentMember.tenant_id}/${r._dbId}/${ts}-${safeName}`;
+          displayName = jdFile.name;
+        } else if (useLibraryJD) {
+          displayName = selectedRoleLib.standard_jd_filename || 'Standard JD.pdf';
+          const { data: sig, error: sigErr } = await sb.storage
+            .from('hire-medha').createSignedUrl(selectedRoleLib.standard_jd_path, 60);
+          if (sigErr) throw sigErr;
+          const resp = await fetch(sig.signedUrl);
+          if (!resp.ok) throw new Error('Could not fetch library JD: HTTP ' + resp.status);
+          uploadBlob = await resp.blob();
+          uploadContentType = 'application/pdf';
+          const safeName = displayName.replace(/[^a-zA-Z0-9._-]/g, '_');
+          storagePath = `jds/${state.currentMember.tenant_id}/${r._dbId}/${ts}-lib-${safeName}`;
+        }
+        const { error: upErr } = await sb.storage
+          .from('hire-medha').upload(storagePath, uploadBlob, { contentType: uploadContentType, upsert: false });
+        if (upErr) throw upErr;
+        const { error: updErr } = await sb.from('requisitions').update({
+          jd_storage_path: storagePath,
+          jd_uploaded_at: new Date().toISOString(),
+          jd_filename: displayName,
+        }).eq('id', r._dbId);
+        if (updErr) throw updErr;
+        r.jdStoragePath = storagePath;
+        r.jdFilename = displayName;
+        r.jdUploadedAt = new Date().toISOString();
+      } catch (e) {
+        console.error('JD persist (revise) failed:', e);
+        toast('Resubmitted, but JD update failed: ' + (e.message || e), true);
+      }
+    }
+
+    logActivity(r.id, 'Requisition revised by requester — back to HRBP review');
+    await saveData('activities', state.activities);
+    state.editingReqId = null;
+    state.selectedReqId = r.id;
+    alert(`Requisition ${r.id} revised and resubmitted to HRBP review.`);
+    setView('req_detail');
+    return;
+  }
+
+  // ============================================================
+  // CREATE MODE: original new-req flow continues below
+  // ============================================================
+  const newReq = {
+    id: generateReqId(), roleId, roleTitle, isNewRole, grade,
+    buId,
+    function: document.getElementById('function').value,
+    subFunction: document.getElementById('subFunction').value,
+    unit: document.getElementById('unit').value,
+    raisedOnBehalfOfEmpId: onBehalfOfEmpId || null,
+    isReplacement: isRep.value === 'yes', isPlanned: isPlan.value === 'yes',
+    justification: document.getElementById('justification').value,
+    resourcesRequired,
+    hrbpJustification: null, fhJustification: null, ceoJustification: null,
+    immediateSupervisorId: supId, hiringManagerId: hmId, requesterId: state.currentUserId,
+    supervisorEmpId: supEmpId, hmEmpId: hmEmpId,
+    jdFilename: useLibraryJD ? (selectedRoleLib.standard_jd_filename || 'Standard JD.pdf') : jdFile.name,
+    // Approval path & status set conditionally:
+    //  - exec_track  (HM is CEO): skip HRBP+FH, route directly to CEO
+    //  - fh_direct   (HM is FH): HRBP reviews then routes to that specific FH only
+    //  - ceo_required (unplanned hire): standard path with CEO at the end
+    //  - standard: HRBP -> FH (no CEO)
+    status: execHireType === 'ceo_hire' ? 'ceo_approval' : 'hrbp_review',
+    approvalPath: execHireType === 'ceo_hire' ? 'exec_track'
+                : execHireType === 'fh_hire' ? 'fh_direct'
+                : (isUnplanned ? 'ceo_required' : 'standard'),
+    submittedAt: new Date().toISOString(),
+    hrbpApprovedAt: null, fhApprovedAt: null, ceoApprovedAt: null,
+    taAssignedAt: null, assignedRecruiters: [],
+    targetFillDate: null, rejectionReason: null, revisionNotes: null
+  };
+  state.requisitions.push(newReq);
+  // Targeted single-req save: await the insert so _dbId is set BEFORE we log activity
+  try {
+    await saveSingleRequisition(newReq);
+  } catch (e) {
+    // Roll back the push so the UI state stays consistent
+    state.requisitions.pop();
+    alert('Failed to submit: ' + (e.message || e));
+    return;
+  }
+
+  // ⭐ JD persistence: two code paths, both produce a req-owned storage object.
+  //   (A) LIBRARY PATH: role has a standard JD. Download the library PDF and
+  //       re-upload it into the req's own folder. This SNAPSHOTS the JD at
+  //       submission time (historical accuracy) — if HR later replaces the
+  //       library version, existing reqs keep their original copy.
+  //   (B) MANUAL UPLOAD: as before — upload the user-selected file.
+  // Both end at the same state: jd_storage_path points to a file the req owns.
+  if (newReq._dbId && state.currentMember?.tenant_id) {
+    try {
+      const ts = Date.now();
+      let storagePath, displayName, uploadBlob, uploadContentType;
+      if (useLibraryJD) {
+        displayName = selectedRoleLib.standard_jd_filename || 'Standard JD.pdf';
+        // Download the library PDF as a Blob via a signed URL
+        const { data: sig, error: sigErr } = await sb.storage
+          .from('hire-medha')
+          .createSignedUrl(selectedRoleLib.standard_jd_path, 60);
+        if (sigErr) throw sigErr;
+        const resp = await fetch(sig.signedUrl);
+        if (!resp.ok) throw new Error('Could not fetch library JD: HTTP ' + resp.status);
+        uploadBlob = await resp.blob();
+        uploadContentType = 'application/pdf';
+        const safeName = displayName.replace(/[^a-zA-Z0-9._-]/g, '_');
+        storagePath = `jds/${state.currentMember.tenant_id}/${newReq._dbId}/${ts}-lib-${safeName}`;
+      } else {
+        uploadBlob = jdFile;
+        uploadContentType = 'application/pdf';
+        const safeName = jdFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        storagePath = `jds/${state.currentMember.tenant_id}/${newReq._dbId}/${ts}-${safeName}`;
+        displayName = jdFile.name;
+      }
+      const { error: upErr } = await sb.storage
+        .from('hire-medha')
+        .upload(storagePath, uploadBlob, { contentType: uploadContentType, upsert: false });
+      if (upErr) throw upErr;
+      const { error: updErr } = await sb
+        .from('requisitions')
+        .update({
+          jd_storage_path: storagePath,
+          jd_uploaded_at: new Date().toISOString(),
+          jd_filename: displayName,
+        })
+        .eq('id', newReq._dbId);
+      if (updErr) throw updErr;
+      newReq.jdStoragePath = storagePath;
+      newReq.jdFilename = displayName;
+      newReq.jdUploadedAt = new Date().toISOString();
+    } catch (e) {
+      console.error('JD persist failed:', e);
+      toast('Requisition saved, but JD attach failed: ' + (e.message || e), true);
+    }
+  }
+
+  logActivity(newReq.id, 'Requisition submitted');
+  await saveData('activities', state.activities);  // persist the activity row now that _dbId exists
+  alert(`Requisition ${newReq.id} submitted.${isUnplanned ? '\n\nNote: Requires CEO approval.' : ''}`);
+  setView('dashboard');
+}
+
+
+function renderRequesterDetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  const reqActivities = state.activities.filter(a => a.reqId === reqId).sort((a,b) => new Date(b.date) - new Date(a.date));
+  const reqCands = state.candidates.filter(c => c.reqId === reqId && c.status === 'active');
+  const pipeline = {
+    sourcing: reqCands.filter(c => c.stage === 'sourcing').length,
+    screening: reqCands.filter(c => c.stage === 'screening').length,
+    interview: reqCands.filter(c => c.stage === 'interview').length,
+    preemployment: reqCands.filter(c => c.stage === 'preemployment').length,
+    offer: reqCands.filter(c => c.stage === 'offer').length
+  };
+  
+  // Requester can put on-hold or cancel if req is in approval, pending TA assignment, or active sourcing
+  // NOT if already rejected/closed/cancelled/pending_close (offer accepted)
+  const canHoldOrCancel = ['hrbp_review','fh_approval','ceo_approval','ta_assignment','active_sourcing','revisions_requested'].includes(r.status);
+  const canResume = r.status === 'on_hold';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_reqs')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
+          ${r.isNewRole ? `<span class="badge badge-info"><span class="badge-dot"></span>${t('st_new_role')}</span>` : ''}
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+      
+      ${r.status === 'on_hold' ? `
+        <div class="banner banner-warning">
+          <span class="banner-icon">${ICONS.warning}</span>
+          <span>${t('banner_on_hold')}</span>
+        </div>
+      ` : ''}
+      
+      <div class="detail-layout">
+        <div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_req_details')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_bu') || 'Business Unit'}</span><span class="detail-value">${getBuName(r.buId) || '—'}</span></div>
+              ${r.raisedOnBehalfOfEmpId ? (() => {
+                const exec = (state.employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+                return exec ? `<div class="detail-row"><span class="detail-label">${t('lbl_on_behalf') || 'On behalf of'}</span><span class="detail-value">${exec.name_en || exec.name_kh} (${exec.is_ceo ? 'CEO' : 'Function Head'})</span></div>` : '';
+              })() : ''}
+              <div class="detail-row"><span class="detail-label">${t('lbl_function')}</span><span class="detail-value">${r.function}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_subfunction')}</span><span class="detail-value">${r.subFunction}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_unit')}</span><span class="detail-value">${r.unit || '—'}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_replacement')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_planned')}</span><span class="detail-value">${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getSupervisorName(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
+              ${r.targetFillDate ? `<div class="detail-row"><span class="detail-label">${t('th_target_fill')}</span><span class="detail-value">${formatDate(r.targetFillDate)} · ${daysUntil(r.targetFillDate)}${t('txt_days').charAt(0)}</span></div>` : ''}
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_justification')}</div></div>
+            <div class="panel-body">
+              <p class="lead" style="font-size: 1rem;">${r.justification}</p>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_resources')}</div></div>
+            <div class="panel-body">${renderResourcesBlock(r)}</div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_jd')}</div></div>
+            <div class="panel-body">
+              <div class="jd-viewer">
+                <div style="color: var(--ink-4);">${ICONS.doc}</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${escJs(r._dbId)}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
+              </div>
+            </div>
+          </div>
+          
+          ${r.status === 'active_sourcing' ? `
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">${t('sec_pipeline_summary')}</div></div>
+              <div class="panel-body">
+                <div class="pipeline-stats">
+                  <div class="pipeline-stat"><div class="pipeline-stat-label">${t('metric_sourcing')}</div><div class="pipeline-stat-value">${pipeline.sourcing}</div></div>
+                  <div class="pipeline-stat"><div class="pipeline-stat-label">Screening</div><div class="pipeline-stat-value">${pipeline.screening}</div></div>
+                  <div class="pipeline-stat"><div class="pipeline-stat-label">${t('metric_interviews')}</div><div class="pipeline-stat-value">${pipeline.interview}</div></div>
+                  <div class="pipeline-stat"><div class="pipeline-stat-label">${t('btn_pre_emp')}</div><div class="pipeline-stat-value">${pipeline.preemployment}</div></div>
+                  <div class="pipeline-stat"><div class="pipeline-stat-label">${t('btn_offer')}</div><div class="pipeline-stat-value">${pipeline.offer}</div></div>
+                </div>
+                <p class="text-sm text-muted mt-2">${reqCands.length} ${t('metric_candidates').toLowerCase()} ${t('txt_total').toLowerCase()}</p>
+              </div>
+            </div>
+          ` : ''}
+          
+          ${r.holdReason ? `
+            <div class="panel" style="border-left: 3px solid #6b4fbb;">
+              <div class="panel-header"><div class="panel-title" style="color: #6b4fbb;">${t('lbl_hold_reason')}</div></div>
+              <div class="panel-body"><p>${r.holdReason}</p></div>
+            </div>
+          ` : ''}
+          
+          ${r.cancelReason ? `
+            <div class="panel" style="border-left: 3px solid var(--ink-3);">
+              <div class="panel-header"><div class="panel-title" style="color: var(--ink-3);">${t('lbl_cancel_reason')}</div></div>
+              <div class="panel-body"><p>${r.cancelReason}</p></div>
+            </div>
+          ` : ''}
+          
+          ${r.rejectionReason ? `
+            <div class="panel" style="border-left: 3px solid var(--danger);">
+              <div class="panel-header"><div class="panel-title" style="color: var(--danger);">${t('lbl_reject_reason')}</div></div>
+              <div class="panel-body"><p>${r.rejectionReason}</p></div>
+            </div>
+          ` : ''}
+          
+          ${r.revisionNotes ? `
+            <div class="panel" style="border-left: 3px solid var(--warning);">
+              <div class="panel-header"><div class="panel-title" style="color: var(--warning);">${t('lbl_rev_notes')}</div></div>
+              <div class="panel-body"><p>${r.revisionNotes}</p></div>
+            </div>
+          ` : ''}
+        </div>
+        
+        <div class="side-panel">
+          ${r.status === 'revisions_requested' ? `
+            <div class="panel" style="border-left: 3px solid var(--warning);">
+              <div class="panel-header"><div class="panel-title" style="color: var(--warning);">${t('sec_actions')}</div></div>
+              <div class="panel-body">
+                <p class="text-sm" style="margin-bottom: 0.75rem; color: var(--ink-2);">${t('banner_revisions') || 'Revisions requested. Click below to update and re-send for approval.'}</p>
+                <button class="btn btn-primary full-width" onclick="reviseReq('${escJs(r.id)}')">${ICONS.edit || '✎'} ${t('btn_revise_resubmit') || 'Revise & Resubmit'}</button>
+              </div>
+            </div>
+          ` : ''}
+          
+          ${(canHoldOrCancel || canResume) ? `
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">${t('sec_actions')}</div></div>
+              <div class="panel-body">
+                <div class="flex-col">
+                  ${canResume ? `<button class="btn btn-success full-width" onclick="resumeReq('${escJs(r.id)}')">${ICONS.check} ${t('btn_resume')}</button>` : ''}
+                  ${canHoldOrCancel ? `<button class="btn btn-warning full-width" onclick="openHoldModal('${escJs(r.id)}')">${ICONS.pause} ${t('btn_put_on_hold')}</button>` : ''}
+                  ${canHoldOrCancel ? `<button class="btn btn-danger full-width" onclick="openCancelModal('${escJs(r.id)}')">${ICONS.x} ${t('btn_cancel_req')}</button>` : ''}
+                </div>
+              </div>
+            </div>
+          ` : ''}
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_activity')}</div></div>
+            <div class="panel-body">
+              <div class="activity-feed">
+                ${reqActivities.length === 0 ? `<p class="text-sm text-muted">${t('activity_none')}</p>` :
+                  reqActivities.map(a => `
+                    <div class="activity-item">
+                      <div class="activity-dot"></div>
+                      <div class="activity-content">
+                        <div class="activity-date">${formatDate(a.date)}</div>
+                        <div class="activity-text">${a.text}</div>
+                      </div>
+                    </div>
+                  `).join('')
+                }
+              </div>
+            </div>
+          </div>
+          
+          ${r.assignedRecruiters.length > 0 ? `
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">${r.assignedRecruiters.length > 1 ? t('sec_assigned_recs') : t('sec_assigned_rec')}</div></div>
+              <div class="panel-body">
+                ${r.assignedRecruiters.map(id => {
+                  const u = getUser(id);
+                  const uName = u?.name || 'Unknown';
+                  const uEmail = u?.email || '';
+                  const initials = getUserInitials(id);
+                  return `
+                    <div class="flex" style="align-items: center; gap: 0.6rem; padding: 0.4rem 0;">
+                      <div class="user-avatar" style="width: 32px; height: 32px; font-size: 0.75rem;">${initials}</div>
+                      <div>
+                        <div style="font-weight: 500; font-size: 0.88rem;">${uName}</div>
+                        <div class="text-xs text-muted">${uEmail}</div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// HRBP VIEW
+// ============================================================
+function renderHRBP() {
+  const main = document.getElementById('mainView');
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderHRBPDetail(state.selectedReqId); return; }
+  
+  const pending = state.requisitions.filter(r => r.status === 'hrbp_review');
+  const pendingClose = state.requisitions.filter(r => r.status === 'pending_close');
+  const allActive = state.requisitions.filter(r => !['rejected','closed','cancelled'].includes(r.status));
+  const breaches = pending.filter(r => daysSince(r.submittedAt) > 2).length;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_hrbp')}</div>
+          <h1>${t('title_req_review')}</h1>
+          <p>${t('sub_hrbp')}</p>
+        </div>
+        <button class="btn btn-primary" onclick="setView('new_req')">${ICONS.plus} ${t('btn_new_req_on_behalf') || 'New requisition (on behalf)'}</button>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">${t('metric_pending_review')}</div>
+          <div class="metric-value">${pending.length}</div>
+          <div class="metric-sub ${breaches > 0 ? 'negative' : ''}">${breaches} ${t('txt_over_sla')}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_pending_close')}</div>
+          <div class="metric-value">${pendingClose.length}</div>
+          <div class="metric-sub">${t('txt_offers_accepted')}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_active_reqs')}</div>
+          <div class="metric-value">${allActive.length}</div>
+          <div class="metric-sub">${t('txt_across_stages')}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">${t('metric_your_sla')}</div>
+          <div class="metric-value">2${t('txt_days').charAt(0)}</div>
+          <div class="metric-sub">${t('txt_per_req')}</div>
+        </div>
+      </div>
+      
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('pending_review', event)">${t('tab_pending_review')} <span class="tab-count">${pending.length}</span></button>
+        <button class="tab" onclick="switchTab('pending_close', event)">${t('tab_pending_close')} <span class="tab-count">${pendingClose.length}</span></button>
+        <button class="tab" onclick="switchTab('all_active', event)">${t('tab_all_active')} <span class="tab-count">${allActive.length}</span></button>
+      </div>
+      
+      <div id="tab-pending_review" class="tab-content">
+        <div class="panel">
+          ${pending.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_caught_up')}</div><div class="empty-desc">${t('empty_caught_up_hrbp')}</div></div>` : `
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_path')}</th><th>${t('th_submitted')}</th><th>${t('th_sla')}</th></tr></thead>
+              <tbody>${pending.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${getRequesterDisplay(r)}</td>
+                  <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
+                  <td>${formatDate(r.submittedAt)}</td>
+                  <td><div class="sla-indicator ${getSLAClass(daysSince(r.submittedAt), 2)}"><span class="sla-value">${daysSince(r.submittedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+      
+      <div id="tab-pending_close" class="tab-content hidden">
+        <div class="panel">
+          ${pendingClose.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_nothing_close')}</div><div class="empty-desc">${t('empty_nothing_close_desc')}</div></div>` : `
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_candidate')}</th><th>${t('th_start_date')}</th><th></th></tr></thead>
+              <tbody>${pendingClose.map(r => {
+                const c = state.candidates.find(c => c.reqId === r.id && c.offer && c.offer.status === 'accepted');
+                return `
+                  <tr>
+                    <td><span class="req-id">${esc(r.id)}</span></td>
+                    <td><div class="role-title">${esc(r.roleTitle)}</div></td>
+                    <td>${c ? c.name : '—'}</td>
+                    <td>${c && c.offer ? formatDate(c.offer.startDate) : '—'}</td>
+                    <td style="text-align: right;"><button class="btn btn-primary btn-sm" onclick="closeReqModal('${escJs(r.id)}')">${t('btn_close_req_short')}</button></td>
+                  </tr>
+                `;
+              }).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+      
+      <div id="tab-all_active" class="tab-content hidden">
+        <div class="panel">
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_status')}</th><th>${t('th_days_stage')}</th></tr></thead>
+            <tbody>${allActive.map(r => `
+              <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                <td><span class="req-id">${esc(r.id)}</span></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div></td>
+                <td>${getRequesterDisplay(r)}</td>
+                <td>${statusBadge(r.status)}</td>
+                <td>${daysSince(getStageDate(r))}${t('txt_days').charAt(0)}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function switchTab(name, event) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+  document.getElementById('tab-' + name).classList.remove('hidden');
+}
+
+function renderHRBPDetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_queue')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+      
+      ${r.approvalPath === 'ceo_required' ? `
+        <div class="banner banner-warning">
+          <span class="banner-icon">${ICONS.warning}</span>
+          <span>${t('banner_ceo_required')}</span>
+        </div>
+      ` : ''}
+      
+      <div class="detail-layout">
+        <div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_req')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_replacement')} / ${t('lbl_planned')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')} / ${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getSupervisorName(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">${t('sec_justification')}</div>
+              <span class="text-xs text-muted">${t('txt_editable_autosave')}</span>
+            </div>
+            <div class="panel-body">
+              <textarea id="hrbpJustification" rows="5" onblur="saveField('${escJs(r.id)}', 'hrbpJustification')">${r.hrbpJustification || r.justification}</textarea>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_resources')}</div></div>
+            <div class="panel-body">${renderResourcesBlock(r)}</div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_jd')}</div></div>
+            <div class="panel-body">
+              <div class="jd-viewer">
+                <div style="color: var(--ink-4);">${ICONS.doc}</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${escJs(r._dbId)}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="side-panel">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_actions')}</div></div>
+            <div class="panel-body">
+              <div class="flex-col">
+                <button class="btn btn-success full-width" onclick="approveHRBP('${escJs(r.id)}')">${ICONS.check} ${t('btn_approve_send_fh')}</button>
+                <button class="btn btn-warning full-width" onclick="requestRevision('${escJs(r.id)}', 'hrbp')">${ICONS.rotate} ${t('btn_request_rev')}</button>
+                <button class="btn btn-danger full-width" onclick="rejectReq('${escJs(r.id)}', 'hrbp')">${ICONS.x} ${t('btn_reject')}</button>
+              </div>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_timeline')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${daysSince(r.submittedAt)}${t('txt_days').charAt(0)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('txt_sla_target')}</span><span class="detail-value">${t('txt_2d')}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_status')}</span><span class="${getSLAClass(daysSince(r.submittedAt), 2)}">${daysSince(r.submittedAt) <= 2 ? t('st_on_track') : t('st_over_sla')}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function saveField(reqId, field) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r[field] = document.getElementById(field).value;
+  try {
+    await saveSingleRequisition(r);
+  } catch (e) {
+    console.error('saveField failed:', e);
+    toast('Field autosave failed: ' + (e.message || e), true);
+  }
+}
+
+async function approveHRBP(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const ta = document.getElementById('hrbpJustification');
+  if (ta) r.hrbpJustification = ta.value;
+  r.hrbpApprovedAt = new Date().toISOString();
+  r.status = 'fh_approval';
+  await persistReqChange(r, 'Approved by HRBP');
+}
+
+function requestRevision(reqId, from) {
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_revisions')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${t('modal_rev_desc')}</p>
+    <div class="form-group">
+      <label class="required">${t('lbl_rev_notes')}</label>
+      <textarea id="revisionNotes" rows="4" placeholder="${t('ph_revision')}"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="checkbox-row"><input type="checkbox" id="requestNewJD"> ${t('hint_req_new_jd')}</label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-warning" onclick="submitRevision('${reqId}', '${from}')">${t('btn_send_back')}</button>
+    </div>
+  `);
+}
+
+async function submitRevision(reqId, from) {
+  const notes = document.getElementById('revisionNotes').value;
+  if (!notes.trim()) { alert('Please provide revision notes'); return; }
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r.revisionNotes = notes;
+  r.status = 'revisions_requested';
+  await persistReqChange(r, `Revisions requested by ${from.toUpperCase()}`);
+}
+
+function rejectReq(reqId, from) {
+  openModal(`
+    <div class="modal-header"><h2 style="color: var(--danger);">${t('modal_reject')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="banner banner-warning" style="margin-bottom: 1rem;">
+      <span class="banner-icon">${ICONS.warning}</span>
+      <span>${t('banner_cannot_undo')}</span>
+    </div>
+    <div class="form-group">
+      <label class="required">${t('lbl_reject_reason')}</label>
+      <textarea id="rejectionReason" rows="4" placeholder="${t('ph_reject')}"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-danger" onclick="submitRejection('${reqId}', '${from}')">${ICONS.x} ${t('btn_confirm_reject')}</button>
+    </div>
+  `);
+}
+
+async function submitRejection(reqId, from) {
+  const reason = document.getElementById('rejectionReason').value;
+  if (!reason.trim()) { alert('Please provide reason'); return; }
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r.rejectionReason = `Rejected by ${from.toUpperCase()}: ${reason}`;
+  r.status = 'rejected';
+  await persistReqChange(r, `Rejected by ${from.toUpperCase()}`);
+}
+
+function closeReqModal(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const c = state.candidates.find(c => c.reqId === reqId && c.offer && c.offer.status === 'accepted');
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_close_req')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="detail-row"><span class="detail-label">${t('sec_req')}</span><span class="detail-value">${esc(r.id)} — ${esc(r.roleTitle)}</span></div>
+    <div class="detail-row"><span class="detail-label">${t('th_candidate')}</span><span class="detail-value">${c ? esc(c.name) : '—'}</span></div>
+    <div class="detail-row"><span class="detail-label">${t('th_start_date')}</span><span class="detail-value">${c && c.offer ? formatDate(c.offer.startDate) : '—'}</span></div>
+    <div class="form-group mt-2">
+      <label class="checkbox-row"><input type="checkbox" id="startedWork"> ${t('cand_started')}</label>
+      <label class="checkbox-row"><input type="checkbox" id="onboardingDone"> ${t('cand_onboarded')}</label>
+    </div>
+    <div class="form-group">
+      <label>${t('notes_optional')}</label>
+      <textarea id="closeNotes" rows="3"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-success" onclick="confirmClose('${reqId}')">${ICONS.check} ${t('btn_close_req')}</button>
+    </div>
+  `);
+}
+
+async function confirmClose(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r.status = 'closed';
+  r.closedAt = new Date().toISOString();
+  await persistReqChange(r, 'Requisition closed — filled');
+}
+
+// ============================================================
+// ON-HOLD / CANCEL / RESUME (Requester actions)
+// ============================================================
+function openHoldModal(reqId) {
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_put_on_hold')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${t('modal_hold_desc')}</p>
+    <div class="form-group">
+      <label class="required">${t('lbl_hold_reason')}</label>
+      <textarea id="holdReason" rows="4" placeholder="${t('ph_hold')}"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-warning" onclick="submitHold('${reqId}')">${ICONS.pause} ${t('btn_confirm_hold')}</button>
+    </div>
+  `);
+}
+
+async function submitHold(reqId) {
+  const reason = document.getElementById('holdReason').value.trim();
+  if (!reason) { alert('Please provide a reason'); return; }
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r.previousStatus = r.status;
+  r.status = 'on_hold';
+  r.holdReason = reason;
+  r.heldAt = new Date().toISOString();
+  const ok = await persistReqChange(r, `Put on hold by requester: ${reason.length > 80 ? reason.substring(0, 80) + '…' : reason}`, { nextView: null });
+  if (ok) render();
+}
+
+// Enter edit mode for an existing requisition (typically after HRBP requested
+// revisions). Sets the editingReqId flag and navigates to the new-req form,
+// which will pre-fill all fields from the existing req.
+function reviseReq(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) { toast('Requisition not found', true); return; }
+  if (r.status !== 'revisions_requested') {
+    toast('This requisition is not pending revision', true);
+    return;
+  }
+  state.editingReqId = reqId;
+  state.selectedReqId = null;
+  setView('new_req');
+}
+
+function resumeReq(reqId) {
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_resume')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${t('modal_resume_desc')}</p>
+    <div class="detail-row"><span class="detail-label">${t('th_req_id')}</span><span class="detail-value">${reqId}</span></div>
+    <div class="detail-row"><span class="detail-label">${t('th_status')}</span><span class="detail-value">→ ${getStatusLabel((state.requisitions.find(x => x.id === reqId) || {}).previousStatus || 'hrbp_review')}</span></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-success" onclick="confirmResume('${reqId}')">${ICONS.check} ${t('btn_resume')}</button>
+    </div>
+  `);
+}
+
+async function confirmResume(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const prev = r.previousStatus || 'hrbp_review';
+  r.status = prev;
+  r.holdReason = null;
+  r.previousStatus = null;
+  r.resumedAt = new Date().toISOString();
+  const ok = await persistReqChange(r, `Resumed by requester — returned to ${getStatusLabel(prev)}`, { nextView: null });
+  if (ok) render();
+}
+
+function openCancelModal(reqId) {
+  openModal(`
+    <div class="modal-header"><h2 style="color: var(--ink-3);">${t('modal_cancel_req')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="banner banner-warning" style="margin-bottom: 1rem;">
+      <span class="banner-icon">${ICONS.warning}</span>
+      <span>${t('banner_cancel_cannot_undo')}</span>
+    </div>
+    <p class="modal-desc">${t('modal_cancel_desc')}</p>
+    <div class="form-group">
+      <label class="required">${t('lbl_cancel_reason')}</label>
+      <textarea id="cancelReason" rows="4" placeholder="${t('ph_cancel')}"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-danger" onclick="submitCancel('${reqId}')">${ICONS.x} ${t('btn_confirm_cancel')}</button>
+    </div>
+  `);
+}
+
+async function submitCancel(reqId) {
+  const reason = document.getElementById('cancelReason').value.trim();
+  if (!reason) { alert('Please provide a reason'); return; }
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  r.status = 'cancelled';
+  r.cancelReason = reason;
+  r.cancelledAt = new Date().toISOString();
+  const ok = await persistReqChange(r, `Cancelled by requester: ${reason.length > 80 ? reason.substring(0, 80) + '…' : reason}`, { nextView: null });
+  if (ok) render();
+}
+
+// ============================================================
+// FUNCTION HEAD / CEO VIEW (shared detail structure)
+// ============================================================
+function renderFunctionHead() {
+  const main = document.getElementById('mainView');
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderFHDetail(state.selectedReqId); return; }
+  
+  // Find which employee the current logged-in FH user is, so we can filter
+  // fh_direct reqs (only the named exec sees their own).
+  const currentEmp = (state.employeeMaps.list || []).find(e => e.user_id === state.currentAuthUser?.id);
+  const currentEmpId = currentEmp?.id || null;
+  // Admins see everything; non-admin FHs are filtered.
+  const isAdminUser = state.currentMember?.role === 'admin';
+
+  const pending = state.requisitions.filter(r => {
+    if (r.status !== 'fh_approval') return false;
+    if (r.approvalPath !== 'fh_direct') return true;  // standard / ceo_required: visible to all FHs
+    // fh_direct: only the named exec sees it (admin sees all)
+    if (isAdminUser) return true;
+    return r.raisedOnBehalfOfEmpId === currentEmpId;
+  });
+  const breaches = pending.filter(r => daysSince(r.hrbpApprovedAt) > 2).length;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_fh')}</div>
+          <h1>${t('title_approval_queue')}</h1>
+          <p>${t('sub_fh')}</p>
+        </div>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_pending_approval')}</div><div class="metric-value">${pending.length}</div><div class="metric-sub ${breaches > 0 ? 'negative' : ''}">${breaches} ${t('txt_over_sla')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_your_sla')}</div><div class="metric-value">2${t('txt_days').charAt(0)}</div><div class="metric-sub">${t('txt_per_req_short')}</div></div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">${t('sec_queue')}</div><span class="text-xs text-muted">${pending.length}</span></div>
+        ${pending.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_caught_up')}</div><div class="empty-desc">${t('empty_caught_up_fh')}</div></div>` : `
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_path')}</th><th>${t('th_hrbp_approved')}</th><th>${t('th_sla')}</th></tr></thead>
+            <tbody>${pending.map(r => `
+              <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                <td><span class="req-id">${esc(r.id)}</span></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                <td>${getRequesterDisplay(r)}</td>
+                <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
+                <td>${formatDate(r.hrbpApprovedAt)}</td>
+                <td><div class="sla-indicator ${getSLAClass(daysSince(r.hrbpApprovedAt), 2)}"><span class="sla-value">${daysSince(r.hrbpApprovedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderFHDetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_queue')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          ${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : ''}
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+      
+      ${r.approvalPath === 'ceo_required' ? `
+        <div class="banner banner-warning">
+          <span class="banner-icon">${ICONS.warning}</span>
+          <span>${t('banner_ceo_after_fh')}</span>
+        </div>
+      ` : ''}
+
+      ${r.approvalPath === 'fh_direct' ? (() => {
+        const exec = (state.employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+        return `
+          <div class="banner" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.85rem 1rem; border-radius: 4px; margin-bottom: 0.75rem;">
+            <strong>⚡ Direct report to you</strong> — this hire reports directly to ${exec ? (exec.name_en || exec.name_kh) : 'a Function Head'}. HRBP raised this requisition on their behalf. Your approval is the final gate before TA assignment.
+          </div>
+        `;
+      })() : ''}
+      
+      <div class="detail-layout">
+        <div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_req')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_hrbp_approved')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_replacement')} / ${t('lbl_planned')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')} / ${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getSupervisorName(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">${t('sec_justification')}</div>
+              <span class="text-xs text-muted">${t('txt_hrbp_edits')}</span>
+            </div>
+            <div class="panel-body">
+              <textarea id="fhJustification" rows="5" onblur="saveField('${escJs(r.id)}', 'fhJustification')">${r.fhJustification || r.hrbpJustification || r.justification}</textarea>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_resources')}</div></div>
+            <div class="panel-body">${renderResourcesBlock(r)}</div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_jd')}</div></div>
+            <div class="panel-body">
+              <div class="jd-viewer">
+                <div style="color: var(--ink-4);">${ICONS.doc}</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${escJs(r._dbId)}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="side-panel">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_actions')}</div></div>
+            <div class="panel-body">
+              <div class="flex-col">
+                <button class="btn btn-success full-width" onclick="approveFH('${escJs(r.id)}')">${ICONS.check} ${t('btn_approve')}</button>
+                <button class="btn btn-warning full-width" onclick="requestRevision('${escJs(r.id)}', 'function_head')">${ICONS.rotate} ${t('btn_request_rev')}</button>
+                <button class="btn btn-danger full-width" onclick="rejectReq('${escJs(r.id)}', 'function_head')">${ICONS.x} ${t('btn_reject')}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function approveFH(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const ta = document.getElementById('fhJustification');
+  if (ta) r.fhJustification = ta.value;
+  r.fhApprovedAt = new Date().toISOString();
+  let activityText;
+  if (r.approvalPath === 'ceo_required') {
+    r.status = 'ceo_approval';
+    activityText = 'Approved by Function Head — sent to CEO';
+  } else {
+    r.status = 'ta_assignment';
+    activityText = 'Approved by Function Head';
+  }
+  await persistReqChange(r, activityText);
+}
+
+// ============================================================
+// CEO VIEW
+// ============================================================
+function renderCEO() {
+  const main = document.getElementById('mainView');
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderCEODetail(state.selectedReqId); return; }
+  
+  const pending = state.requisitions.filter(r => r.status === 'ceo_approval');
+  // For SLA calc: exec_track reqs go straight to CEO from submission (no FH step),
+  // so use submittedAt for those. Standard ceo_required reqs use fhApprovedAt.
+  const breaches = pending.filter(r => {
+    const since = r.approvalPath === 'exec_track' ? r.submittedAt : r.fhApprovedAt;
+    return daysSince(since) > 5;
+  }).length;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_ceo')}</div>
+          <h1>${t('title_exec_approvals')}</h1>
+          <p>${t('sub_ceo')}</p>
+        </div>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_pending_approval')}</div><div class="metric-value">${pending.length}</div><div class="metric-sub ${breaches > 0 ? 'negative' : ''}">${breaches} ${t('txt_over_sla')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_your_sla')}</div><div class="metric-value">5${t('txt_days').charAt(0)}</div><div class="metric-sub">${t('txt_per_req_short')}</div></div>
+      </div>
+      
+      <div class="banner banner-warning">
+        <span class="banner-icon">${ICONS.warning}</span>
+        <span>${t('banner_unplanned_all')}</span>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">${t('sec_queue')}</div></div>
+        ${pending.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_caught_up')}</div></div>` : `
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_hrbp')}</th><th>${t('th_fh_approved')}</th><th>${t('th_sla')}</th></tr></thead>
+            <tbody>${pending.map(r => `
+              <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                <td><span class="req-id">${esc(r.id)}</span> <span class="badge badge-ceo" style="margin-left: 0.3rem;">${t('st_unplanned')}</span></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                <td>${getRequesterDisplay(r)}</td>
+                <td>${formatDate(r.hrbpApprovedAt)}</td>
+                <td>${formatDate(r.fhApprovedAt)}</td>
+                <td><div class="sla-indicator ${getSLAClass(daysSince(r.fhApprovedAt), 5)}"><span class="sla-value">${daysSince(r.fhApprovedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 5${t('txt_days').charAt(0)}</span></div></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderCEODetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_queue')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          <span class="badge badge-ceo">${t('st_unplanned')}</span>
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+
+      ${r.approvalPath === 'exec_track' ? `
+      <div class="banner" style="background: #fef9f5; border-left: 3px solid var(--blaze, #e0592a); padding: 0.85rem 1rem; border-radius: 4px; margin-bottom: 0.75rem;">
+        <strong>⚡ Exec-level requisition</strong> — this hire reports directly to a Function Head or to you.
+        ${r.raisedOnBehalfOfEmpId ? (() => {
+          const exec = (state.employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
+          return exec ? `Raised on behalf of <strong>${exec.name_en || exec.name_kh}</strong> (${exec.is_ceo ? 'CEO' : 'Function Head'}). HRBP and FH steps were skipped — your approval is the only required gate.` : '';
+        })() : 'HRBP and FH steps were skipped per the exec-hire workflow.'}
+      </div>
+      ` : ''}
+      
+      <div class="banner banner-warning">
+        <span class="banner-icon">${ICONS.warning}</span>
+        <span>${t('banner_ceo_approval')}</span>
+      </div>
+      
+      <div class="detail-layout">
+        <div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_approval_chain')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('txt_approval_sent')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('txt_fh_approved')}</span><span class="detail-value">${formatDate(r.fhApprovedAt)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('txt_type')}</span><span class="detail-value" style="color: var(--warning); font-weight: 600;">${t('txt_unplanned_noyes')}</span></div>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">${t('sec_justification')}</div>
+              <span class="text-xs text-muted">${t('txt_all_edits')}</span>
+            </div>
+            <div class="panel-body">
+              <textarea id="ceoJustification" rows="6" onblur="saveField('${escJs(r.id)}', 'ceoJustification')">${r.ceoJustification || r.fhJustification || r.hrbpJustification || r.justification}</textarea>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_resources')}</div></div>
+            <div class="panel-body">${renderResourcesBlock(r)}</div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_jd')}</div></div>
+            <div class="panel-body">
+              <div class="jd-viewer">
+                <div style="color: var(--ink-4);">${ICONS.doc}</div>
+                <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+                ${r.jdStoragePath ? `
+                  <button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${escJs(r._dbId)}')">${t('btn_view_jd') || 'View JD'}</button>
+                ` : `
+                  <div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>
+                `}
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="side-panel">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_exec_actions')}</div></div>
+            <div class="panel-body">
+              <div class="flex-col">
+                <button class="btn btn-success full-width" onclick="approveCEO('${escJs(r.id)}')">${ICONS.check} ${t('btn_approve_send_ta')}</button>
+                <button class="btn btn-warning full-width" onclick="requestRevision('${escJs(r.id)}', 'ceo')">${ICONS.rotate} ${t('btn_request_rev')}</button>
+                <button class="btn btn-danger full-width" onclick="rejectReq('${escJs(r.id)}', 'ceo')">${ICONS.x} ${t('btn_reject_final')}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function approveCEO(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const ta = document.getElementById('ceoJustification');
+  if (ta) r.ceoJustification = ta.value;
+  r.ceoApprovedAt = new Date().toISOString();
+  r.status = 'ta_assignment';
+  await persistReqChange(r, 'Approved by CEO');
+}
+
+// ============================================================
+// HEAD OF TA VIEW
+// ============================================================
+function renderHeadTA() {
+  const main = document.getElementById('mainView');
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderTADetail(state.selectedReqId); return; }
+  
+  const pending = state.requisitions.filter(r => r.status === 'ta_assignment');
+  const active = state.requisitions.filter(r => r.status === 'active_sourcing');
+  // All reqs in the tenant — used for end-to-end visibility (Head of TA sees everything)
+  const allReqs = state.requisitions.slice().sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
+  // Real recruiters from the tenant (from tenant_members + profiles).
+  const recruiters = Object.values(state.realUsersByUuid).filter(u => u.role === 'recruiter');
+  // Richer per-recruiter performance metrics: active reqs, total candidates in pipeline,
+  // interviews currently scheduled, offers out, and lifetime closed count.
+  const workload = recruiters.map(rec => {
+    const assigned = state.requisitions.filter(r => r.assignedRecruiters.includes(rec.id));
+    const activeOnes = assigned.filter(r => r.status === 'active_sourcing');
+    const closedOnes = assigned.filter(r => r.status === 'closed');
+    const heldOnes   = assigned.filter(r => r.status === 'on_hold');
+    const pipelineCands = state.candidates.filter(c => activeOnes.some(r => r.id === c.reqId) && c.status === 'active');
+    return {
+      ...rec,
+      openReqs:   activeOnes.length,
+      heldReqs:   heldOnes.length,
+      closedReqs: closedOnes.length,
+      candidates: pipelineCands.length,
+      interviews: pipelineCands.filter(c => c.stage === 'interview').length,
+      offers:     pipelineCands.filter(c => c.stage === 'offer').length,
+    };
+  });
+  const breaches = pending.filter(r => daysSince(getStageDate(r)) > 2).length;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_ta')}</div>
+          <h1>${t('title_team_orch')}</h1>
+          <p>${t('sub_ta')}</p>
+        </div>
+        <button class="btn btn-primary" onclick="setView('new_req')">${ICONS.plus} ${t('btn_new_req_on_behalf') || 'New requisition (on behalf)'}</button>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_pending_assign')}</div><div class="metric-value">${pending.length}</div><div class="metric-sub ${breaches > 0 ? 'negative' : ''}">${breaches} ${t('txt_over_sla')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_active_sourcing')}</div><div class="metric-value">${active.length}</div><div class="metric-sub">${t('txt_in_progress')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_team_size')}</div><div class="metric-value">${recruiters.length}</div><div class="metric-sub">${t('txt_recruiters')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_your_sla')}</div><div class="metric-value">2${t('txt_days').charAt(0)}</div><div class="metric-sub">${t('txt_per_assignment')}</div></div>
+      </div>
+      
+      <div class="tabs">
+        <button class="tab" onclick="switchTab('pending_assignment', event)">${t('tab_pending_assign')} <span class="tab-count">${pending.length}</span></button>
+        <button class="tab" onclick="switchTab('active_reqs', event)">${t('tab_active_reqs')} <span class="tab-count">${active.length}</span></button>
+        <button class="tab active" onclick="switchTab('all_reqs', event)">${t('tab_all_reqs') || 'All requisitions'} <span class="tab-count">${allReqs.length}</span></button>
+        <button class="tab" onclick="switchTab('workload', event)">${t('tab_workload')}</button>
+      </div>
+      
+      <div id="tab-pending_assignment" class="tab-content hidden">
+        <div class="panel">
+          ${pending.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_all_assigned')}</div></div>` : `
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_path')}</th><th>${t('th_approved')}</th><th>${t('th_sla')}</th></tr></thead>
+              <tbody>${pending.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${getRequesterDisplay(r)}</td>
+                  <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_approved')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
+                  <td>${formatDate(getStageDate(r))}</td>
+                  <td><div class="sla-indicator ${getSLAClass(daysSince(getStageDate(r)), 2)}"><span class="sla-value">${daysSince(getStageDate(r))}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+      
+      <div id="tab-active_reqs" class="tab-content hidden">
+        <div class="panel">
+          ${active.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_active_reqs')}</div></div>` : `
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_assigned')}</th><th>${t('th_target_fill')}</th><th></th></tr></thead>
+              <tbody>${active.map(r => `
+                <tr>
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div></td>
+                  <td>${r.assignedRecruiters.map(getUserName).join(', ')}</td>
+                  <td>${r.targetFillDate ? formatDate(r.targetFillDate) + ' · ' + daysUntil(r.targetFillDate) + t('txt_days').charAt(0) : '—'}</td>
+                  <td style="text-align: right;"><button class="btn btn-secondary btn-sm" onclick="viewReq('${escJs(r.id)}')">${t('btn_reassign')}</button></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+      
+      <div id="tab-all_reqs" class="tab-content">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('sec_all_reqs_title') || 'All requisitions — end-to-end'}</div>
+            <span class="text-xs text-muted">${allReqs.length} ${t('metric_total_reqs') || 'total'}</span>
+          </div>
+          ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No requisitions yet'}</div></div>` : `
+            <div class="panel-body no-pad">
+              <table class="table">
+                <thead><tr>
+                  <th>${t('th_req_id')}</th>
+                  <th>${t('th_role')}</th>
+                  <th>${t('th_requester')}</th>
+                  <th>${t('th_status')}</th>
+                  <th>${t('th_current_stage') || 'Currently with'}</th>
+                  <th>${t('th_submitted') || 'Submitted'}</th>
+                </tr></thead>
+                <tbody>${allReqs.map(r => `
+                  <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                    <td><span class="req-id">${esc(r.id)}</span></td>
+                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${r.function || ''} · ${r.grade}</div></td>
+                    <td>${getRequesterDisplay(r)}</td>
+                    <td>${statusBadge(r.status)}</td>
+                    <td>${esc(getCurrentOwner(r))}</td>
+                    <td>${formatDate(r.submittedAt)}</td>
+                  </tr>
+                `).join('')}</tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      </div>
+      
+      <div id="tab-workload" class="tab-content hidden">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">${t('sec_workload_perf') || 'Team workload & performance'}</div></div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr>
+                <th>${t('th_recruiter') || 'Recruiter'}</th>
+                <th style="text-align: center;">${t('metric_active_reqs')}</th>
+                <th style="text-align: center;">${t('metric_candidates')}</th>
+                <th style="text-align: center;">${t('metric_interviews')}</th>
+                <th style="text-align: center;">${t('metric_offers_out')}</th>
+                <th style="text-align: center;">${t('metric_on_hold')}</th>
+                <th style="text-align: center;">${t('metric_closed') || 'Closed'}</th>
+              </tr></thead>
+              <tbody>${workload.sort((a,b) => a.openReqs - b.openReqs).map(w => `
+                <tr>
+                  <td>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                      <div class="user-avatar" style="width: 32px; height: 32px; font-size: 0.75rem;">${getUserInitials(w.id)}</div>
+                      <span style="font-weight: 500;">${w.name}</span>
+                    </div>
+                  </td>
+                  <td style="text-align: center; font-weight: 500;">${w.openReqs}</td>
+                  <td style="text-align: center;">${w.candidates}</td>
+                  <td style="text-align: center;">${w.interviews}</td>
+                  <td style="text-align: center;">${w.offers}</td>
+                  <td style="text-align: center; color: var(--ink-3);">${w.heldReqs}</td>
+                  <td style="text-align: center; color: var(--ink-3);">${w.closedReqs}</td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTADetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  // Real recruiters from the tenant
+  const recruiters = Object.values(state.realUsersByUuid).filter(u => u.role === 'recruiter');
+  const workload = recruiters.map(rec => ({ ...rec, openReqs: state.requisitions.filter(x => x.status === 'active_sourcing' && x.assignedRecruiters.includes(rec.id)).length })).sort((a,b) => a.openReqs - b.openReqs);
+  const isReassign = r.status === 'active_sourcing';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_queue')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${isReassign ? t('btn_reassign') : t('btn_assign').split(' ')[0]}: ${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+      
+      <div class="detail-layout">
+        <div>
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_summary')}</div></div>
+            <div class="panel-body">
+              <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_path')}</span><span class="detail-value">${r.approvalPath === 'ceo_required' ? t('st_ceo_approved') : t('st_standard')}</span></div>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_justification')}</div></div>
+            <div class="panel-body">
+              <p>${r.ceoJustification || r.fhJustification || r.hrbpJustification || r.justification}</p>
+            </div>
+          </div>
+          
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${t('sec_resources')}</div></div>
+            <div class="panel-body">${renderResourcesBlock(r)}</div>
+          </div>
+        </div>
+        
+        <div class="side-panel">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">${isReassign ? t('btn_reassign') : t('btn_assign').split(' ')[0]} ${t('txt_recruiters')}</div></div>
+            <div class="panel-body">
+              ${isReassign && r.assignedRecruiters.length > 0 ? `
+                <p class="text-xs text-muted mb-1">${t('txt_currently')}</p>
+                <div class="mb-2 flex-gap">${r.assignedRecruiters.map(id => `<span class="badge badge-info">${getUserName(id)}</span>`).join('')}</div>
+              ` : ''}
+              <p class="text-xs text-muted mb-1">${t('txt_select_sorted')}</p>
+              <div class="workload-list" id="recruiterList">
+                ${workload.map(w => `
+                  <label class="workload-row has-checkbox">
+                    <div class="workload-left">
+                      <input type="checkbox" value="${w.id}" ${r.assignedRecruiters.includes(w.id) ? 'checked' : ''} style="accent-color: var(--brand-navy);">
+                      <div class="user-avatar" style="width: 26px; height: 26px; font-size: 0.65rem;">${getUserInitials(w.id)}</div>
+                      <span class="workload-name">${w.name}</span>
+                    </div>
+                    <span class="workload-count">${w.openReqs}</span>
+                  </label>
+                `).join('')}
+              </div>
+              <button class="btn btn-primary full-width mt-2" onclick="assignRecruiters('${escJs(r.id)}')">
+                ${ICONS.check} ${isReassign ? t('btn_save_reassign') : t('btn_assign')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function assignRecruiters(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return;
+  const checked = Array.from(document.querySelectorAll('#recruiterList input:checked')).map(cb => cb.value);
+  if (checked.length === 0) { alert('Select at least one recruiter'); return; }
+
+  const wasReassign = r.status === 'active_sourcing';
+  r.assignedRecruiters = checked;
+  if (!wasReassign) {
+    r.taAssignedAt = new Date().toISOString();
+    r.status = 'active_sourcing';
+    r.targetFillDate = calculateTargetFillDate(r.grade, r.ceoApprovedAt || r.fhApprovedAt);
+  }
+
+  const activityText = wasReassign
+    ? `Reassigned to ${checked.map(getUserName).join(', ')}`
+    : `Assigned to ${checked.map(getUserName).join(', ')}`;
+
+  // Also sync the requisition_recruiters M:N table: delete existing rows for
+  // this req, then insert the new set. Only UUIDs that map to real tenant
+  // members are persisted; unknown UUIDs are dropped defensively.
+  const realChecked = checked.filter(uid => state.realUsersByUuid[uid]);
+  if (r._dbId) {
+    try {
+      await sb.from('requisition_recruiters').delete().eq('requisition_id', r._dbId);
+      if (realChecked.length > 0) {
+        await sb.from('requisition_recruiters').insert(
+          realChecked.map(uid => ({
+            requisition_id: r._dbId,
+            user_id: uid,
+            assigned_by: state.currentAuthUser?.id,
+          }))
+        );
+      }
+    } catch (e) {
+      console.error('recruiter assignment sync failed:', e);
+      toast('Recruiter assignment partially saved: ' + (e.message || e), true);
+    }
+  }
+
+  await persistReqChange(r, activityText);
+}
+
+// ============================================================
+// RECRUITER VIEW
+// ============================================================
+function renderRecruiter() {
+  const main = document.getElementById('mainView');
+  if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderRecruiterDetail(state.selectedReqId); return; }
+  
+  // ⭐ Filter by real auth UUID for non-admins so each recruiter sees only their
+  // own assignments. Admins use currentUserId (their own auth UUID too, since
+  // the legacy demo-ID fallback was retired).
+  const isAdmin = state.currentMember?.role === 'admin';
+  const myId = isAdmin ? state.currentUserId : state.currentAuthUser?.id;
+  const allAssigned = state.requisitions.filter(r => r.assignedRecruiters.includes(myId));
+  const myReqs = allAssigned.filter(r => r.status === 'active_sourcing');
+  const heldReqs = allAssigned.filter(r => r.status === 'on_hold');
+  const closedReqs = allAssigned.filter(r => r.status === 'closed');
+  const myCands = state.candidates.filter(c => myReqs.some(r => r.id === c.reqId) && c.status === 'active');
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_recruiter')}</div>
+          <h1>${t('title_your_pipeline')}</h1>
+          <p>${t('sub_recruiter')}</p>
+        </div>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_active_reqs')}</div><div class="metric-value">${myReqs.length}</div><div class="metric-sub">${t('txt_assigned_you')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_candidates')}</div><div class="metric-value">${myCands.length}</div><div class="metric-sub">${t('txt_total_pipeline')}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_interviews')}</div><div class="metric-value">${myCands.filter(c => c.stage === 'interview').length}</div><div class="metric-sub">${t('metric_active').toLowerCase()}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_offers_out')}</div><div class="metric-value">${myCands.filter(c => c.stage === 'offer').length}</div><div class="metric-sub">${t('txt_awaiting_response')}</div></div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">${t('sec_my_reqs')}</div></div>
+        ${myReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_assign')}</div></div>` : `
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_grade')}</th><th>${t('th_target_fill')}</th><th>${t('th_remaining')}</th><th>${t('th_pipeline')}</th></tr></thead>
+            <tbody>${myReqs.map(r => {
+              const cands = state.candidates.filter(c => c.reqId === r.id && c.status === 'active');
+              const daysLeft = daysUntil(r.targetFillDate);
+              const slaClass = daysLeft > 7 ? 'sla-good' : daysLeft > 3 ? 'sla-warning' : 'sla-bad';
+              return `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div></td>
+                  <td>${r.grade}</td>
+                  <td>${formatDate(r.targetFillDate)}</td>
+                  <td><span class="${slaClass}" style="font-weight: 500;">${daysLeft}${t('txt_days').charAt(0)}</span></td>
+                  <td>${cands.length} ${t('metric_candidates').toLowerCase()}</td>
+                </tr>
+              `;
+            }).join('')}</tbody>
+          </table>
+        `}
+      </div>
+      
+      ${heldReqs.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('metric_on_hold')}</div>
+            <span class="text-xs text-muted">${heldReqs.length}</span>
+          </div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_status')}</th></tr></thead>
+              <tbody>${heldReqs.map(r => `
+                <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                  <td><span class="req-id">${esc(r.id)}</span></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                  <td>${getRequesterDisplay(r)}</td>
+                  <td>${statusBadge(r.status)}</td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+
+      ${closedReqs.length > 0 ? `
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">${t('metric_closed') || 'Closed'} — ${t('sec_history') || 'History'}</div>
+            <span class="text-xs text-muted">${closedReqs.length}</span>
+          </div>
+          <div class="panel-body no-pad">
+            <table class="table">
+              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_closed_date') || 'Closed'}</th></tr></thead>
+              <tbody>${closedReqs
+                .slice()
+                .sort((a, b) => new Date(b.closedAt || b.updatedAt || 0) - new Date(a.closedAt || a.updatedAt || 0))
+                .map(r => `
+                  <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                    <td><span class="req-id">${esc(r.id)}</span></td>
+                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div></td>
+                    <td>${getRequesterDisplay(r)}</td>
+                    <td>${formatDate(r.closedAt || r.updatedAt)}</td>
+                  </tr>
+                `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderRecruiterDetail(reqId) {
+  const r = state.requisitions.find(x => x.id === reqId);
+  if (!r) return '<div class="empty">Not found</div>';
+  
+  const reqCands = state.candidates.filter(c => c.reqId === reqId && c.status === 'active');
+  const stages = ['sourcing', 'screening', 'interview', 'preemployment', 'offer'];
+  const stageLabelsEN = { sourcing: 'Sourcing', screening: 'Screening', interview: 'Interview', preemployment: 'Pre-employment', offer: 'Offer' };
+  const stageLabelsKM = { sourcing: 'ស្វែងរក', screening: 'ពិនិត្យ', interview: 'សម្ភាសន៍', preemployment: 'ពិនិត្យមុន', offer: 'ផ្តល់ជូន' };
+  const stageLabels = state.currentLang === 'km' ? stageLabelsKM : stageLabelsEN;
+  const stageColors = { sourcing: '#73726c', screening: '#1e40af', interview: '#1e40af', preemployment: '#b45309', offer: '#2d7a4f' };
+  
+  const requester = getUser(r.requesterId);
+  // Use the rich helpers so we get role tags and on-behalf-of context.
+  // Fall back to employee record for email when the platform-user lookup misses.
+  const hmEmp = r.hmEmpId ? state.employeeMaps.byId[r.hmEmpId] : null;
+  const requesterName = getRequesterDisplay(r);
+  const requesterEmail = requester?.email || '';
+  const hmName = getHiringManagerName(r);
+  const hmEmail = (hmEmp?.company_email) || getUser(r.hiringManagerId)?.email || '';
+  const daysLeft = daysUntil(r.targetFillDate);
+  const slaClass = daysLeft > 7 ? 'sla-good' : daysLeft > 3 ? 'sla-warning' : 'sla-bad';
+  const isOnHold = r.status === 'on_hold';
+  
+  return `
+    <div class="view-enter">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back} ${t('btn_back_pipeline')}</button>
+      
+      <div class="detail-hero">
+        <span class="req-id-large">${esc(r.id)}</span>
+        <h1>${esc(r.roleTitle)}</h1>
+        <div class="detail-meta">
+          ${statusBadge(r.status)}
+          <span class="badge badge-neutral">${r.grade}</span>
+          <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
+        </div>
+      </div>
+      
+      ${isOnHold ? `
+        <div class="banner banner-warning">
+          <span class="banner-icon">${ICONS.warning}</span>
+          <span>${t('banner_on_hold')}${r.holdReason ? ` <em style="opacity: 0.85;">— ${r.holdReason}</em>` : ''}</span>
+        </div>
+      ` : ''}
+      
+      <div class="panel">
+        <div class="panel-body">
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem;">
+            <div>
+              <div class="eyebrow">${t('th_target_fill')}</div>
+              <div style="font-family: var(--font-serif); font-size: 1.25rem; font-weight: 500; margin-top: 0.25rem; color: var(--ink);">
+                ${formatDate(r.targetFillDate)}
+              </div>
+              <div class="${slaClass} mt-1" style="font-weight: 500; font-size: 0.85rem;">${daysLeft}${t('txt_days').charAt(0)} ${t('th_remaining').toLowerCase()}</div>
+            </div>
+            <div>
+              <div class="eyebrow">${t('th_requester')}</div>
+              <div style="font-weight: 500; margin-top: 0.25rem;">${requesterName}</div>
+              <div class="text-xs text-muted">${requesterEmail}</div>
+            </div>
+            <div>
+              <div class="eyebrow">${t('lbl_hm')}</div>
+              <div style="font-weight: 500; margin-top: 0.25rem;">${hmName}</div>
+              <div class="text-xs text-muted">${hmEmail}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">${t('sec_approval_chain') || 'Approval History'}</div></div>
+        <div class="panel-body">
+          <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
+          ${r.hrbpApprovedAt ? `<div class="detail-row"><span class="detail-label">${t('th_hrbp_approved') || 'HRBP Approved'}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>` : ''}
+          ${r.fhApprovedAt ? `<div class="detail-row"><span class="detail-label">Function Head Approved</span><span class="detail-value">${formatDate(r.fhApprovedAt)}</span></div>` : ''}
+          ${r.ceoApprovedAt ? `<div class="detail-row"><span class="detail-label">CEO Approved</span><span class="detail-value">${formatDate(r.ceoApprovedAt)}</span></div>` : ''}
+          ${r.taAssignedAt ? `<div class="detail-row"><span class="detail-label">Assigned to TA</span><span class="detail-value">${formatDate(r.taAssignedAt)}</span></div>` : ''}
+          ${(() => {
+            const reqActivities = state.activities.filter(a => a.reqId === r.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+            if (reqActivities.length === 0) return '';
+            return `
+              <details style="margin-top: 0.75rem; border-top: 1px solid var(--rule); padding-top: 0.75rem;">
+                <summary style="cursor: pointer; color: var(--ink-2); font-size: 0.875rem;">${t('sec_activity') || 'Full activity log'} (${reqActivities.length})</summary>
+                <div class="activity-feed" style="margin-top: 0.75rem;">
+                  ${reqActivities.map(a => `
+                    <div class="activity-item">
+                      <div class="activity-dot"></div>
+                      <div class="activity-content">
+                        <div class="activity-date">${formatDate(a.date)}</div>
+                        <div class="activity-text">${a.text}</div>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </details>
+            `;
+          })()}
+        </div>
+      </div>
+      
+      <details class="collapsible">
+        <summary>${t('sec_justification')} & ${t('sec_jd')}</summary>
+        <div>
+          <h3>${t('sec_justification')}</h3>
+          <p>${r.ceoJustification || r.fhJustification || r.hrbpJustification || r.justification}</p>
+          <h3 class="mt-2">${t('sec_resources')}</h3>
+          ${renderResourcesBlock(r)}
+          <h3 class="mt-2">${t('sec_jd')}</h3>
+          <div class="jd-viewer" style="padding: 1.25rem;">
+            <div style="color: var(--ink-4);">${ICONS.doc}</div>
+            <div class="jd-filename">${r.jdFilename || '<em>No JD uploaded</em>'}</div>
+            ${r.jdStoragePath
+              ? `<button class="btn btn-secondary btn-sm mt-2" onclick="viewJD('${escJs(r._dbId)}')">${t('btn_view_jd') || 'View JD'}</button>`
+              : `<div class="jd-note">${r.jdFilename ? 'Legacy JD (re-upload to view)' : ''}</div>`}
+          </div>
+        </div>
+      </details>
+      
+      <div class="flex-between mt-3 mb-2">
+        <h2>${t('sec_candidate_pipeline')}</h2>
+        <button class="btn btn-primary" onclick="addCandidate('${escJs(r.id)}')" ${isOnHold ? 'disabled title="Requisition is on hold"' : ''}>${ICONS.plus} ${t('btn_add_cand')}</button>
+      </div>
+      
+      <div class="kanban-wrapper" ${isOnHold ? 'style="opacity: 0.55;"' : ''}>
+        <div class="kanban-board">
+          ${stages.map(stage => {
+            const cands = reqCands.filter(c => c.stage === stage);
+            return `
+              <div class="kanban-col">
+                <div class="kanban-col-header">
+                  <span class="kanban-stage-name" style="color: ${stageColors[stage]};">${stageLabels[stage]}</span>
+                  <span class="kanban-count">${cands.length}</span>
+                </div>
+                ${cands.map(c => renderCandCard(c, isOnHold)).join('')}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCandCard(c, isOnHold = false) {
+  let actions = '';
+  const dis = isOnHold ? 'disabled title="Requisition is on hold"' : '';
+  if (c.stage === 'sourcing') {
+    actions = `<button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'screening')" ${dis}>Screen</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+  } else if (c.stage === 'screening') {
+    actions = `<button class="btn btn-primary" onclick="scheduleInterview('${escJs(c.id)}')" ${dis}>Interview</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+  } else if (c.stage === 'interview') {
+    actions = `<button class="btn btn-secondary" onclick="addFeedback('${escJs(c.id)}')" ${dis}>Feedback</button><button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'preemployment')" ${dis}>Pre-emp</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+  } else if (c.stage === 'preemployment') {
+    // Pre-employment "all checks pass" gating: required = reference, background, education, COI document.
+    // Criminal record check is OPTIONAL (per TA team feedback 27 Apr — sometimes not applicable).
+    // COI is satisfied by an UPLOADED signed declaration form (v35), not a checkbox.
+    const allOK = c.preEmploymentChecks
+      && c.preEmploymentChecks.reference
+      && c.preEmploymentChecks.background
+      && c.preEmploymentChecks.education
+      && !!c.preEmploymentChecks.coiStoragePath;
+    actions = `<button class="btn btn-secondary" onclick="updateChecks('${escJs(c.id)}')" ${dis}>Checks</button><button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'offer')" ${allOK && !isOnHold ? '' : 'disabled'}>Offer</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+  } else if (c.stage === 'offer') {
+    if (!c.offer) actions = `<button class="btn btn-primary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Prepare offer</button>`;
+    else if (c.offer.status === 'sent') actions = `<button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button><button class="btn btn-warning" onclick="offerResponse('${escJs(c.id)}', 'negotiating')" ${dis}>Negotiate</button><button class="btn btn-danger" onclick="offerResponse('${escJs(c.id)}', 'declined')" ${dis}>Decline</button>`;
+    else if (c.offer.status === 'accepted') actions = `<span class="badge badge-success">${ICONS.check} Accepted</span>`;
+    else if (c.offer.status === 'negotiating') actions = `<button class="btn btn-secondary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Update</button><button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button>`;
+  }
+
+  // CV view button — only shown to roles allowed to view CVs (PII gate).
+  // Button click also re-checks permission in viewCV() as a server-side-style defense.
+  const canViewCV = ['admin','recruiter','hiring_manager','hrbp','head_ta'].includes(state.currentMember?.role);
+  const cvButton = (canViewCV && c.cvStoragePath)
+    ? `<button class="btn btn-secondary btn-sm" onclick="viewCV('${escJs(c._dbId)}')" style="margin-top: 0.5rem; width: 100%;">${t('btn_view_cv') || 'View CV'}</button>`
+    : '';
+
+  return `
+    <div class="cand-card">
+      <div class="cand-name">${esc(c.name)}</div>
+      <div class="cand-meta">${c.source} · <span class="mono">${daysSince(c.stageChangedAt)}d</span> in stage</div>
+      ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
+      ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
+      ${cvButton}
+      <div class="cand-actions">${actions}</div>
+    </div>
+  `;
+}
+
+// ============================================================
+// CV AUTO-FILL (browser-side, regex + heuristics — no external API)
+// ============================================================
+// When a recruiter selects a CV PDF in the Add Candidate modal, we extract
+// text in-browser using pdf.js, then use regex + simple heuristics to
+// auto-fill the name/email/phone fields. The CV file itself is NOT sent
+// anywhere until the form is submitted (then it goes to Supabase Storage
+// like before). This design is fully PDPL-compliant: candidate PII never
+// leaves the recruiter's browser before they review and submit.
+//
+// Auto-filled fields are marked with a yellow border + "verify" badge so
+// the recruiter knows to confirm before submitting. The badge disappears
+// as soon as the recruiter edits that field manually.
+
+async function onCandCVSelected(fileInput) {
+  const file = fileInput.files?.[0];
+  const status = document.getElementById('cvParseStatus');
+  if (!file) { if (status) status.textContent = ''; return; }
+  if (file.type !== 'application/pdf') {
+    if (status) { status.textContent = 'CV must be PDF'; status.className = 'cv-parse-status error'; }
+    return;
+  }
+  // pdf.js may not be loaded yet if the CDN is slow — degrade gracefully
+  if (!window.pdfjsLib) {
+    if (status) { status.textContent = ''; status.className = 'cv-parse-status'; }
+    return;
+  }
+  if (status) { status.textContent = (t('msg_parsing_cv') || 'Reading CV…'); status.className = 'cv-parse-status'; }
+  try {
+    const extracted = await extractPDFText(file);
+    // extractPDFText returns { text, lines, firstPageItems }
+    if (!extracted || !extracted.text || extracted.text.trim().length < 20) {
+      // Most likely a scanned/image-based PDF with no extractable text
+      if (status) { status.textContent = (t('msg_cv_no_text') || 'CV has no text — please fill fields manually'); status.className = 'cv-parse-status error'; }
+      return;
+    }
+    const guesses = parseCVText(extracted);
+    let filled = 0;
+    if (guesses.email) { setAutofilled('candEmail', guesses.email); filled++; }
+    if (guesses.phone) { setAutofilled('candPhone', guesses.phone); filled++; }
+    if (guesses.name)  { setAutofilled('candName',  guesses.name);  filled++; }
+    if (status) {
+      if (filled === 0) {
+        status.textContent = (t('msg_cv_no_match') || 'No fields detected — please fill manually');
+        status.className = 'cv-parse-status error';
+      } else {
+        status.textContent = `${filled} ${(t('msg_cv_filled') || 'field(s) auto-filled — please verify before submit')}`;
+        status.className = 'cv-parse-status success';
+      }
+    }
+    // Stash the last extraction on window for live debugging from the console.
+    // No PII is logged automatically; this is opt-in for the recruiter who
+    // wants to share what the parser saw.
+    window._lastCVExtraction = extracted;
+  } catch (e) {
+    console.error('CV parse failed:', e);
+    if (status) { status.textContent = (t('msg_cv_parse_err') || 'Could not read CV — please fill manually'); status.className = 'cv-parse-status error'; }
+  }
+}
+
+// Extract structured text from a PDF File using pdf.js. Returns:
+//   { text: <flat string for regex>, lines: [{text, fontSize}], firstPageItems: [...] }
+// The richer structure lets the name heuristic look at actual lines (grouped
+// by y-coordinate) and font size — both critical for finding the name on
+// real-world CVs.
+async function extractPDFText(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const allLines = [];
+  let firstPageItems = [];
+  let flatText = '';
+  // Cap at 5 pages — CVs rarely have contact info beyond page 1.
+  const maxPages = Math.min(pdf.numPages, 5);
+  for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const tc = await page.getTextContent();
+    if (pageNum === 1) firstPageItems = tc.items;
+    // Group text items by Y-coordinate to reconstruct visual lines.
+    // pdf.js y-coordinate decreases as we go down; we round to nearest 2px
+    // so items on the same row group together even if there's slight drift.
+    const rows = new Map();
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const y = Math.round((it.transform?.[5] ?? 0) / 2) * 2;
+      const fontSize = Math.abs(it.transform?.[3] ?? it.height ?? 10);
+      if (!rows.has(y)) rows.set(y, { items: [], maxFont: 0 });
+      const row = rows.get(y);
+      row.items.push(it.str);
+      if (fontSize > row.maxFont) row.maxFont = fontSize;
+    }
+    // Sort rows by y descending (top of page first in PDF coords)
+    const sortedRows = [...rows.entries()].sort((a, b) => b[0] - a[0]);
+    for (const [, row] of sortedRows) {
+      const text = row.items.join(' ').replace(/\s+/g, ' ').trim();
+      if (text) allLines.push({ text, fontSize: row.maxFont, page: pageNum });
+    }
+    flatText += sortedRows.map(([, r]) => r.items.join(' ')).join('\n') + '\n';
+  }
+  return { text: flatText, lines: allLines, firstPageItems };
+}
+
+// Pretty-printable summary for debugging via console.
+function debugCVExtraction(extracted) {
+  dbg('--- CV EXTRACTION DEBUG ---');
+  dbg('Total lines:', extracted.lines.length);
+  dbg('First 10 lines (with font sizes):');
+  for (const l of extracted.lines.slice(0, 10)) {
+    dbg(`  [page ${l.page}] [${l.fontSize.toFixed(1)}px] ${l.text}`);
+  }
+  dbg('Parser output:', parseCVText(extracted));
+}
+
+// Run regex + heuristics over the extracted CV. Accepts either:
+//   - the new structured object { text, lines, firstPageItems }
+//   - or a plain string (back-compat)
+// Returns { name, email, phone } where each field is a string or null.
+function parseCVText(extracted) {
+  // Normalize: accept both shapes
+  const isStructured = extracted && typeof extracted === 'object' && 'text' in extracted;
+  const text = isStructured ? extracted.text : (extracted || '');
+  const lines = isStructured ? extracted.lines : null;
+  const out = { name: null, email: null, phone: null };
+
+  // ---- Email
+  const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi);
+  if (emailMatches) {
+    const real = emailMatches.find(m => !/example\.|test@|noreply|donotreply/i.test(m));
+    if (real) out.email = real.trim();
+  }
+
+  // ---- Phone: extract candidates, then validate.
+  // We collect ALL plausible phone-like strings, then filter out things that
+  // are obviously NOT phone numbers (dates, postal codes, ID numbers).
+  const phoneCandidates = [];
+  const phonePatterns = [
+    /(?:\+?855|00\s?855)[\s\-.]?[\d\s\-.()]{7,15}/g,                // +855 prefix
+    /\b0(?:[1-9]\d?)[\s\-.]?\d{3}[\s\-.]?\d{3,4}\b/g,               // Cambodian local
+    /\+\d{1,3}[\s\-.]?\d{1,4}[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}/g,      // Generic intl
+    /\b\d{3}[\s\-.]\d{3}[\s\-.]\d{3,4}\b/g,                          // 3-3-4 grouped
+  ];
+  for (const pat of phonePatterns) {
+    const matches = text.match(pat) || [];
+    phoneCandidates.push(...matches);
+  }
+  // Validate: digit count must be reasonable (8-15), and reject things that
+  // look like dates (e.g. 2024-05-12 or 12/05/2024).
+  const validPhone = phoneCandidates.find(raw => {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length < 8 || digits.length > 15) return false;
+    // Reject if it looks like a date (year-like leading digits or contains ' / ')
+    if (/^(19|20)\d{2}/.test(raw.trim())) return false;
+    if (/\d+\s*\/\s*\d+\s*\/\s*\d+/.test(raw)) return false;
+    return true;
+  });
+  if (validPhone) out.phone = validPhone.replace(/\s+/g, ' ').trim();
+
+  // ---- Name: structured-aware heuristic.
+  // Strategy when structured lines are available:
+  //   1. Look at lines on page 1 only
+  //   2. Score each line by: font size (bigger = better), position (higher = better),
+  //      "name-likeness" (2-4 cap words, no digits/email, not a heading)
+  //   3. Pick the highest-scoring line as the name
+  // Strategy fallback (string only): scan first 30 lines split by newlines.
+  if (lines && lines.length) {
+    const stopwords = /\b(curriculum vitae|resume|\bcv\b|address|email|phone|tel|mobile|linkedin|website|nationality|date of birth|gender|profile|summary|objective|education|experience|skills|references|career|professional)\b/i;
+    let best = null;
+    let bestScore = -1;
+    // Only consider page 1, and only the first 20 lines on it
+    const pageOneLines = lines.filter(l => l.page === 1).slice(0, 20);
+    // Find max font size on page 1 to normalize the size score
+    const maxFont = pageOneLines.reduce((m, l) => Math.max(m, l.fontSize), 0) || 1;
+    for (let i = 0; i < pageOneLines.length; i++) {
+      const l = pageOneLines[i];
+      const t = (l.text || '').trim();
+      if (t.length < 3 || t.length > 80) continue;
+      if (/[\d@]/.test(t)) continue;
+      if (stopwords.test(t)) continue;
+      // Word-count check: 2-5 word-like tokens, mostly capitalized
+      const words = t.split(/\s+/).filter(w => /^[A-Za-z\u1780-\u17FF.\-']{2,}$/.test(w));
+      if (words.length < 2 || words.length > 5) continue;
+      const capWords = words.filter(w => /^[A-Z]/.test(w));
+      if (capWords.length / words.length < 0.5) continue;
+      // Score: bigger font is much better, earlier position is slightly better
+      const fontScore = (l.fontSize / maxFont) * 100;
+      const positionScore = Math.max(0, 20 - i);  // earlier lines get a small bonus
+      const score = fontScore + positionScore;
+      if (score > bestScore) {
+        bestScore = score;
+        best = words.join(' ');
+      }
+    }
+    if (best) out.name = best;
+  } else {
+    // Fallback: old line-by-line scan if we don't have structured lines
+    const fallbackLines = text.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 30);
+    const stopwords = /\b(curriculum vitae|resume|cv|address|email|phone|tel|mobile|linkedin|website|nationality|date of birth|gender|profile|summary|objective|education|experience|skills)\b/i;
+    for (const line of fallbackLines) {
+      if (line.length < 4 || line.length > 80) continue;
+      if (/[\d@]/.test(line)) continue;
+      if (stopwords.test(line)) continue;
+      const words = line.split(/\s+/).filter(w => /^[A-Za-z\u1780-\u17FF.\-']{2,}$/.test(w));
+      if (words.length < 2 || words.length > 5) continue;
+      const capWords = words.filter(w => /^[A-Z]/.test(w));
+      if (capWords.length / words.length < 0.5) continue;
+      out.name = words.join(' ');
+      break;
+    }
+  }
+
+  return out;
+}
+
+// Apply an auto-detected value to a form input and visually mark it as such.
+function setAutofilled(inputId, value) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  el.value = value;
+  el.classList.add('input-autofilled');
+  el.dataset.autofilled = '1';
+  const hint = document.getElementById('hint' + inputId.charAt(0).toUpperCase() + inputId.slice(1));
+  if (hint) hint.style.display = '';
+}
+
+// When the recruiter manually edits an auto-filled field, drop the visual
+// cue — they've taken ownership of the value.
+function onCandFieldEdit(inputId) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  if (el.dataset.autofilled === '1') {
+    el.classList.remove('input-autofilled');
+    delete el.dataset.autofilled;
+    const hint = document.getElementById('hint' + inputId.charAt(0).toUpperCase() + inputId.slice(1));
+    if (hint) hint.style.display = 'none';
+  }
+}
+
+// ============================================================
+// ADD CANDIDATE
+// ============================================================
+
+function addCandidate(reqId) {
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_add_applicant') || 'Add applicant'}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${t('modal_add_applicant_desc') || 'Add a new applicant to the sourcing pipeline.'}</p>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_full_name')}</label><input type="text" id="candName"></div>
+      <div class="form-group"><label>${t('lbl_email')}</label><input type="email" id="candEmail"></div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_phone')}</label><input type="text" id="candPhone" placeholder="+855 12 345 678"></div>
+      <div class="form-group"><label class="required">${t('lbl_source')}</label><select id="candSource"><option>LinkedIn</option><option>Referral</option><option>Job Board</option><option>Direct Apply</option><option>Other</option></select></div>
+    </div>
+    <div class="form-group"><label class="required">${t('lbl_applicant_cv') || 'Applicant CV'}</label><input type="file" id="candCV" accept=".pdf"></div>
+
+    <!-- Demographics (optional, collapsed by default) -->
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Demographics <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — improves diversity reporting)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Gender</label>
+            <select id="candGender">
+              <option value="">— Not specified —</option>
+              <option value="M">Male</option>
+              <option value="F">Female</option>
+              <option value="Other">Other</option>
+              <option value="PNTS">Prefer not to say</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date of birth</label>
+            <input type="date" id="candDOB" max="${new Date(Date.now() - 18*365*86400000).toISOString().slice(0,10)}">
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Years of experience</label>
+            <input type="number" id="candYearsExp" min="0" max="70" step="1" placeholder="e.g. 5">
+          </div>
+          <div class="form-group">
+            <label>Education level</label>
+            <select id="candEducation">
+              <option value="">— Not specified —</option>
+              <option value="high_school">High School</option>
+              <option value="diploma">Diploma</option>
+              <option value="bachelor">Bachelor</option>
+              <option value="master">Master</option>
+              <option value="phd">PhD</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Nationality</label>
+          <input type="text" id="candNationality" placeholder="e.g. Cambodian" value="Cambodian">
+        </div>
+      </div>
+    </details>
+
+    ${isHeadOfTA() ? `
+    <!-- Sourcing costs (Head of TA only) — Gap 2 -->
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Sourcing cost <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — Head of TA)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <p class="text-xs text-muted" style="margin-bottom: 0.75rem;">
+          Cost data is associated with the source you pick above. Fill the relevant section based on how this candidate came in. Leave blank if no cost.
+        </p>
+
+        <!-- Agency block (only relevant if source = Agency) -->
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Agency name</label>
+            <input type="text" id="candAgencyName" placeholder="e.g. ABC Recruitment Co.">
+            <div class="text-xs text-muted">Only if source is "Agency".</div>
+          </div>
+          <div class="form-group">
+            <label>Agency fee (USD)</label>
+            <input type="number" id="candAgencyFee" min="0" step="0.01" placeholder="e.g. 1500">
+          </div>
+        </div>
+
+        <!-- Referral block (only relevant if source = Referral) -->
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Referred by</label>
+            <select id="candReferralEmp">
+              <option value="">— None —</option>
+              ${(state.employeeMaps.list || []).slice(0, 200).map(e => `<option value="${e.id}">${e.name_en || e.name_kh || ''} ${e.position_title ? '· ' + e.position_title : ''}</option>`).join('')}
+            </select>
+            <div class="text-xs text-muted">Only if source is "Referral". Showing first 200 employees.</div>
+          </div>
+          <div class="form-group">
+            <label>Referral bonus (USD)</label>
+            <input type="number" id="candReferralBonus" min="0" step="0.01" placeholder="e.g. 200">
+          </div>
+        </div>
+
+        <!-- Catch-all -->
+        <div class="form-group">
+          <label>Other direct cost (USD)</label>
+          <input type="number" id="candDirectCost" min="0" step="0.01" placeholder="e.g. 50 (background check, etc.)">
+        </div>
+      </div>
+    </details>
+    ` : ''}
+
+    <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="candNotes" rows="3"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="submitCandidate('${reqId}')">${t('btn_add_applicant') || 'Add applicant'}</button>
+    </div>
+  `);
+}
+
+async function submitCandidate(reqId) {
+  const name = document.getElementById('candName').value.trim();
+  const email = document.getElementById('candEmail').value.trim();
+  const phone = document.getElementById('candPhone').value.trim();
+  const source = document.getElementById('candSource').value;
+  const cvFile = document.getElementById('candCV').files[0];
+  const notes = document.getElementById('candNotes').value;
+  // Demographics (all optional — empty string converted to null)
+  const demoEl = id => document.getElementById(id);
+  const gender = demoEl('candGender')?.value || null;
+  const dob = demoEl('candDOB')?.value || null;
+  const yearsExpRaw = demoEl('candYearsExp')?.value;
+  const yearsExp = (yearsExpRaw === '' || yearsExpRaw == null) ? null : parseInt(yearsExpRaw, 10);
+  const education = demoEl('candEducation')?.value || null;
+  const nationality = (demoEl('candNationality')?.value || '').trim() || null;
+  // Gap 2 — Sourcing economics fields. Only present when isHeadOfTA(); otherwise null.
+  const agencyName = (demoEl('candAgencyName')?.value || '').trim() || null;
+  const agencyFeeRaw = demoEl('candAgencyFee')?.value;
+  const agencyFeeUsd = (agencyFeeRaw === '' || agencyFeeRaw == null) ? null : parseFloat(agencyFeeRaw);
+  const referralEmployeeId = demoEl('candReferralEmp')?.value || null;
+  const referralBonusRaw = demoEl('candReferralBonus')?.value;
+  const referralBonusUsd = (referralBonusRaw === '' || referralBonusRaw == null) ? null : parseFloat(referralBonusRaw);
+  const directCostRaw = demoEl('candDirectCost')?.value;
+  const directCostUsd = (directCostRaw === '' || directCostRaw == null) ? null : parseFloat(directCostRaw);
+  // Email is now OPTIONAL (per TA team feedback 27 Apr) — name, phone, CV remain required.
+  if (!name || !phone || !cvFile) { alert('Fill required fields (name, phone, CV)'); return; }
+  if (cvFile.type !== 'application/pdf') { alert('CV must be PDF'); return; }
+  // Client-side file size check (5MB) — friendlier than letting Storage reject it.
+  const MAX_CV_BYTES = 5 * 1024 * 1024;  // 5 MB
+  if (cvFile.size > MAX_CV_BYTES) {
+    const sizeMB = (cvFile.size / 1024 / 1024).toFixed(1);
+    alert(`CV file is ${sizeMB} MB. Please upload a smaller PDF (max 5 MB).\n\nTip: Use a free online PDF compressor like ilovepdf.com or smallpdf.com.`);
+    return;
+  }
+  // Client-side dup-email check before hitting the DB — only if email was provided.
+  if (email) {
+    const emailLower = email.toLowerCase();
+    const existing = state.candidates.find(c => (c.email || '').toLowerCase() === emailLower);
+    if (existing) {
+      const ok = confirm(`A candidate with email "${email}" already exists in your pipeline (${existing.name}).\n\nClick OK to add anyway (different person, same email), or Cancel to review the existing candidate first.`);
+      if (!ok) return;
+      // If they want to proceed anyway, they'll hit the DB constraint and see a friendly error.
+    }
+  }
+  const newCand = {
+    id: generateCandidateId(), reqId, name, email, phone, source,
+    cvFilename: cvFile.name, notes,
+    gender, dateOfBirth: dob, yearsExperience: yearsExp,
+    educationLevel: education, nationality,
+    // Gap 2 — sourcing economics
+    agencyName, agencyFeeUsd, referralEmployeeId, referralBonusUsd, directCostUsd,
+    stage: 'sourcing', addedAt: new Date().toISOString(), stageChangedAt: new Date().toISOString(),
+    interview: null, feedback: [], preEmploymentChecks: {}, offer: null, status: 'active'
+  };
+  state.candidates.push(newCand);
+  const ok = await persistCandidateChange(newCand, 'New candidate added to pipeline');
+  if (!ok) { state.candidates.pop(); return; }  // roll back on failure
+
+  // ⭐ Upload the CV PDF to Supabase Storage under:
+  //   cvs/{tenant_id}/{candidate_dbId}/{timestamp}-{sanitized_filename}
+  // Same graceful-failure pattern as JD: if upload fails, the candidate
+  // still exists (pipeline data is preserved), a toast warns the user.
+  if (newCand._dbId && state.currentMember?.tenant_id) {
+    try {
+      const ts = Date.now();
+      const safeName = cvFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `cvs/${state.currentMember.tenant_id}/${newCand._dbId}/${ts}-${safeName}`;
+      const { error: upErr } = await sb.storage
+        .from('hire-medha')
+        .upload(storagePath, cvFile, {
+          contentType: 'application/pdf',
+          upsert: false,
+        });
+      if (upErr) throw upErr;
+      const { error: updErr } = await sb
+        .from('candidates')
+        .update({
+          cv_storage_path: storagePath,
+          cv_uploaded_at: new Date().toISOString(),
+          cv_filename: cvFile.name,
+        })
+        .eq('id', newCand._dbId);
+      if (updErr) throw updErr;
+      // Reflect in-memory so the UI updates without refresh
+      newCand.cvStoragePath = storagePath;
+      newCand.cvUploadedAt = new Date().toISOString();
+      render();
+    } catch (e) {
+      console.error('CV upload failed:', e);
+      const f = friendlyError(e);
+      toast(f.hint ? `Candidate saved, but ${f.title.toLowerCase()} — ${f.hint}` : `Candidate saved, but CV upload failed: ${f.title}`, true);
+    }
+  }
+}
+
+async function moveCandidate(candId, toStage) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  c.stage = toStage;
+  c.stageChangedAt = new Date().toISOString();
+  await persistCandidateChange(c, `Candidate moved to ${toStage.replace('preemployment', 'pre-employment check')}`, { closeModal: false });
+}
+
+async function rejectCandidate(candId) {
+  if (!confirm('Reject this candidate?')) return;
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  c.status = 'rejected';
+  await persistCandidateChange(c, null, { closeModal: false });
+}
+
+function scheduleInterview(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const r = state.requisitions.find(x => x.id === c.reqId);
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_sched_int')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_datetime')}</label><input type="datetime-local" id="intDT"></div>
+      <div class="form-group"><label class="required">${t('lbl_type')}</label><select id="intType"><option>Phone Screen</option><option>Video Call</option><option>In-person</option></select></div>
+    </div>
+    <div class="form-group">
+      <label class="required">${t('lbl_interviewer')}</label>
+      <select id="intInt"><option value="${r.hiringManagerId}">${getUserName(r.hiringManagerId)} (${t('lbl_hm')})</option>${getUsersWithRoles(['function_head','hiring_manager','ceo','head_ta','hrbp']).filter(u => u.id !== r.hiringManagerId).map(u => `<option value="${u.id}">${u.name}</option>`).join('')}</select>
+    </div>
+    <div class="form-group"><label>${t('lbl_location')}</label><input type="text" id="intLoc" placeholder="Zoom link or address"></div>
+    <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="intNotes" rows="2"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="submitInterview('${candId}')">${t('btn_schedule')}</button>
+    </div>
+  `);
+}
+
+async function submitInterview(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const dt = document.getElementById('intDT').value;
+  if (!dt) { alert('Date required'); return; }
+  c.interview = { datetime: new Date(dt).toISOString(), type: document.getElementById('intType').value, interviewers: [document.getElementById('intInt').value], location: document.getElementById('intLoc').value, notes: document.getElementById('intNotes').value };
+  c.stage = 'interview';
+  c.stageChangedAt = new Date().toISOString();
+  await persistCandidateChange(c, 'Interview scheduled');
+}
+
+function addFeedback(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const r = state.requisitions.find(x => x.id === c.reqId);
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_int_feedback')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_interviewer')}</label><select id="fbInt">${(c.interview ? c.interview.interviewers : [r.hiringManagerId]).map(id => `<option value="${id}">${getUserName(id)}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="required">${t('lbl_rating')}</label><select id="fbRate"><option>Strong Yes</option><option>Yes</option><option>Maybe</option><option>No</option></select></div>
+    </div>
+    <div class="form-group"><label class="required">${t('btn_feedback')}</label><textarea id="fbNotes" rows="4"></textarea></div>
+    ${c.feedback.length > 0 ? `<div style="background: var(--paper); padding: 0.85rem; border-radius: var(--radius); margin-bottom: 1rem;"><h3 style="margin-bottom: 0.5rem;">${t('sec_prev_feedback')}</h3>${c.feedback.map(f => `<div style="padding: 0.5rem 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem;"><strong>${getUserName(f.interviewerId)}</strong> · <span class="badge ${f.rating === 'Strong Yes' || f.rating === 'Yes' ? 'badge-success' : f.rating === 'No' ? 'badge-danger' : 'badge-warning'}">${f.rating}</span><br><span class="text-sm">${f.notes}</span></div>`).join('')}</div>` : ''}
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="submitFeedback('${candId}')">${t('btn_save_feedback')}</button>
+    </div>
+  `);
+}
+
+async function submitFeedback(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const notes = document.getElementById('fbNotes').value.trim();
+  if (!notes) { alert('Notes required'); return; }
+  c.feedback.push({ interviewerId: document.getElementById('fbInt').value, rating: document.getElementById('fbRate').value, notes, submittedAt: new Date().toISOString() });
+  await persistCandidateChange(c, null);
+}
+
+function updateChecks(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const checks = c.preEmploymentChecks || {};
+  const hasCOI = !!checks.coiStoragePath;
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_pre_emp')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
+    <div class="form-group">
+      <label class="checkbox-row"><input type="checkbox" id="chkRef" ${checks.reference ? 'checked' : ''}> ${t('chk_ref')}</label>
+      <label class="checkbox-row"><input type="checkbox" id="chkBack" ${checks.background ? 'checked' : ''}> ${t('chk_back')}</label>
+      <label class="checkbox-row"><input type="checkbox" id="chkEdu" ${checks.education ? 'checked' : ''}> ${t('chk_edu')}</label>
+      <label class="checkbox-row"><input type="checkbox" id="chkCrim" ${checks.criminal ? 'checked' : ''}> ${t('chk_crim')} <span class="text-xs text-muted">(optional)</span></label>
+    </div>
+
+    <!-- COI is special: it's a signed declaration form, not a yes/no toggle.
+         We track the uploaded document path; "complete" = file present. -->
+    <div class="form-group" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--rule);">
+      <label style="display: block; margin-bottom: 0.5rem; font-weight: 500;">${t('lbl_coi') || 'Conflict of Interest (COI) declaration'}</label>
+      <div id="coiSlot" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--rule); border-radius: var(--radius-sm); background: var(--paper);">
+        ${hasCOI ? `
+          <div style="color: var(--success); display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem;">
+            ${ICONS.check || '✓'} <span class="text-xs text-muted">${checks.coiFilename || 'COI form.pdf'}</span>
+          </div>
+          <div style="margin-left: auto; display: flex; gap: 0.5rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="viewCOI('${candId}')">${t('btn_view') || 'View'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('coiUpl-${candId}').click()">${t('btn_replace') || 'Replace'}</button>
+          </div>
+        ` : `
+          <span class="text-xs text-muted">${t('lbl_coi_no_doc') || 'No COI form uploaded yet'}</span>
+          <div style="margin-left: auto;">
+            <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('coiUpl-${candId}').click()">${t('btn_upload') || 'Upload'}</button>
+          </div>
+        `}
+        <input type="file" id="coiUpl-${candId}" accept=".pdf" style="display: none;" onchange="onCOIFileSelected('${candId}', this)">
+      </div>
+    </div>
+
+    <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="chkNotes" rows="3">${checks.notes || ''}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="saveChecks('${candId}')">${t('btn_save')}</button>
+    </div>
+  `);
+}
+
+async function saveChecks(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const existing = c.preEmploymentChecks || {};
+  // Preserve COI document fields — those are managed separately via upload flow
+  c.preEmploymentChecks = {
+    reference: document.getElementById('chkRef').checked,
+    background: document.getElementById('chkBack').checked,
+    criminal: document.getElementById('chkCrim').checked,
+    education: document.getElementById('chkEdu').checked,
+    coi: !!existing.coiStoragePath,  // legacy boolean = derived from doc presence
+    coiStoragePath: existing.coiStoragePath || null,
+    coiFilename: existing.coiFilename || null,
+    coiUploadedAt: existing.coiUploadedAt || null,
+    notes: document.getElementById('chkNotes').value
+  };
+  await persistCandidateChange(c, null);
+}
+
+// Upload a candidate's signed COI form. Storage path:
+//   coi-forms/{tenant_id}/{candidate_db_id}/{ts}-{filename}.pdf
+async function onCOIFileSelected(candId, fileInput) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') { alert(t('err_pdf_only') || 'Only PDF files are allowed.'); fileInput.value = ''; return; }
+  if (file.size > 10 * 1024 * 1024) { alert(t('err_too_big') || 'File too large (max 10MB).'); fileInput.value = ''; return; }
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c || !c._dbId || !state.currentMember?.tenant_id) { toast('Cannot upload — candidate not yet saved', true); return; }
+  toast(t('msg_uploading') || 'Uploading…');
+  try {
+    const ts = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `coi-forms/${state.currentMember.tenant_id}/${c._dbId}/${ts}-${safeName}`;
+    const { error: upErr } = await sb.storage
+      .from('hire-medha').upload(storagePath, file, { contentType: 'application/pdf', upsert: false });
+    if (upErr) throw upErr;
+    const { error: updErr } = await sb.from('applications').update({
+      coi_storage_path: storagePath,
+      coi_filename: file.name,
+      coi_uploaded_at: new Date().toISOString(),
+      coi_uploaded_by: state.currentAuthUser?.id || null,
+      checks_coi: true,  // legacy boolean stays in sync
+    }).eq('id', c._dbId);
+    if (updErr) throw updErr;
+    // Update in-memory cache
+    c.preEmploymentChecks = c.preEmploymentChecks || {};
+    c.preEmploymentChecks.coiStoragePath = storagePath;
+    c.preEmploymentChecks.coiFilename = file.name;
+    c.preEmploymentChecks.coiUploadedAt = new Date().toISOString();
+    c.preEmploymentChecks.coi = true;
+    toast(t('msg_uploaded') || 'COI uploaded ✓');
+    fileInput.value = '';
+    closeModal();
+    updateChecks(candId);  // re-open with fresh state
+  } catch (e) {
+    console.error('COI upload failed:', e);
+    toast('COI upload failed: ' + (e.message || e), true);
+    fileInput.value = '';
+  }
+}
+
+// View an existing COI document (signed URL, 1-hour TTL).
+async function viewCOI(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const path = c?.preEmploymentChecks?.coiStoragePath;
+  if (!path) { toast('No COI document found', true); return; }
+  try {
+    const { data, error } = await sb.storage.from('hire-medha').createSignedUrl(path, 3600);
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error('No URL returned');
+    window.open(data.signedUrl, '_blank', 'noopener');
+  } catch (e) {
+    console.error('viewCOI failed:', e);
+    toast('Could not open COI: ' + (e.message || e), true);
+  }
+}
+
+function prepareOffer(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const r = state.requisitions.find(x => x.id === c.reqId);
+  const e = c.offer || {};
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_prep_offer')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong> — ${esc(r.roleTitle)}</p>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_salary')}</label><input type="number" id="offSal" value="${e.salary || ''}"></div>
+      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${['G1','G2','G3','G4','G5','G6','G7','G8','G9','G10','G11','G12','G13','G14','G15'].map(g => `<option value="${g}" ${(e.grade || r.grade) === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-group"><label class="required">${t('lbl_start_date')}</label><input type="date" id="offStart" value="${e.startDate || ''}"></div>
+    <div class="form-group"><label>${t('lbl_benefits')}</label><textarea id="offBen" rows="3">${e.benefits || ''}</textarea></div>
+    <div class="form-group"><label>${t('lbl_add_notes')}</label><textarea id="offNotes" rows="2">${e.notes || ''}</textarea></div>
+    <div class="banner banner-info text-sm">
+      <span class="banner-icon">${ICONS.info}</span>
+      <span>${t('hint_offer_letter')}</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="sendOffer('${candId}')">${ICONS.check} ${t('btn_send_offer')}</button>
+    </div>
+  `);
+}
+
+async function sendOffer(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  const sal = document.getElementById('offSal').value;
+  const sd = document.getElementById('offStart').value;
+  if (!sal || !sd) { alert('Salary and start date required'); return; }
+  c.offer = { salary: parseFloat(sal), grade: document.getElementById('offGrade').value, startDate: sd, benefits: document.getElementById('offBen').value, notes: document.getElementById('offNotes').value, sentAt: new Date().toISOString(), status: 'sent' };
+  await persistCandidateChange(c, 'Offer sent to candidate');
+}
+
+async function offerResponse(candId, response) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c || !c.offer) return;
+  c.offer.status = response;
+  c.offer.respondedAt = new Date().toISOString();
+  let reqActivity = null;
+  if (response === 'accepted') {
+    const r = state.requisitions.find(x => x.id === c.reqId);
+    r.status = 'pending_close';
+    // Persist the requisition change first (status → pending_close)
+    try {
+      await saveSingleRequisition(r);
+    } catch (e) {
+      console.error('offerResponse req save failed:', e);
+      toast('Failed to update requisition: ' + (e.message || e), true);
+      return;
+    }
+    reqActivity = `Offer accepted — expected start: ${formatDate(c.offer.startDate)}`;
+    // Gap 3 — auto-create onboarding row so the recruiter can log day 1 status
+    // and the HRBP can log probation outcome at day 30.
+    autoCreateOnboardingForHire(c).catch(e => console.error('[onboarding] background:', e));
+  } else if (response === 'declined') {
+    c.status = 'rejected';
+    reqActivity = 'Offer declined';
+  } else {
+    reqActivity = 'Candidate negotiating offer';
+  }
+  await persistCandidateChange(c, reqActivity, { closeModal: false });
+}
+
+// ============================================================
+// JD LIBRARY (Admin / Head of TA)
+// ============================================================
+// State for the JD Library page filters. Lives outside the render function so
+// values persist across re-renders during a session.
+let jdLibFilters = {
+  function: '',     // function name filter (e.g., 'Commercial')
+  status: 'all',    // 'all' | 'has_jd' | 'no_jd'
+  search: '',       // free-text search on role title
+};
+
+function renderJDLibrary() {
+  const main = document.getElementById('mainView');
+  const canAccess = state.currentMember?.role === 'admin' || state.currentMember?.role === 'head_ta';
+  if (!canAccess) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'No access'}</div></div>`;
+    return;
+  }
+  // Build the role list. state.roleLibMaps.byId is the authoritative store of
+  // role_library rows loaded from the DB (incl. standard_jd_path).
+  // The rows have function_id (FK to departments) — we resolve the human-
+  // readable function name through deptMaps.
+  const tenantId = state.currentMember?.tenant_id || state.currentTenantId;
+  const allRoles = Object.values(state.roleLibMaps.byId)
+    .filter(r => !r.tenant_id || r.tenant_id === tenantId)
+    .map(r => ({
+      ...r,
+      _functionName: state.deptMaps.byId[r.function_id]?.name || '',
+      _subFunctionName: state.deptMaps.byId[r.sub_function_id]?.name || '',
+    }));
+  // Distinct functions for the filter dropdown
+  const functionsList = [...new Set(allRoles.map(r => r._functionName).filter(Boolean))].sort();
+  // Apply filters
+  const search = jdLibFilters.search.toLowerCase();
+  const filtered = allRoles.filter(r => {
+    if (jdLibFilters.function && r._functionName !== jdLibFilters.function) return false;
+    if (jdLibFilters.status === 'has_jd' && !r.standard_jd_path) return false;
+    if (jdLibFilters.status === 'no_jd' && r.standard_jd_path) return false;
+    if (search && !(r.title || '').toLowerCase().includes(search)) return false;
+    return true;
+  }).sort((a, b) => {
+    return (a._functionName || '').localeCompare(b._functionName || '')
+        || (a.title || '').localeCompare(b.title || '')
+        || (a.grade || '').localeCompare(b.grade || '');
+  });
+  const totalRoles = allRoles.length;
+  const withJD = allRoles.filter(r => r.standard_jd_path).length;
+  const withoutJD = totalRoles - withJD;
+  
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_admin') || 'Administration'}</div>
+          <h1>${t('title_jd_library') || 'JD Library'}</h1>
+          <p>${t('sub_jd_library') || 'Manage standard job descriptions for each role. JDs uploaded here will be auto-attached when a requester selects the matching role.'}</p>
+        </div>
+      </div>
+      
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">${t('metric_total_roles') || 'Total roles'}</div><div class="metric-value">${totalRoles}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_with_jd') || 'With JD'}</div><div class="metric-value" style="color: var(--success);">${withJD}</div><div class="metric-sub">${Math.round(withJD/totalRoles*100) || 0}% ${t('txt_complete') || 'complete'}</div></div>
+        <div class="metric"><div class="metric-label">${t('metric_without_jd') || 'Missing JD'}</div><div class="metric-value" style="color: var(--warning);">${withoutJD}</div><div class="metric-sub">${t('txt_to_upload') || 'to upload'}</div></div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-body" style="display: flex; gap: 1rem; align-items: end; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_search') || 'Search'}</label>
+            <input type="text" id="jdLibSearch" value="${jdLibFilters.search.replace(/"/g, '&quot;')}" placeholder="${t('ph_search_role') || 'Role title…'}" oninput="onJDLibFilterChange()" style="width: 100%;">
+          </div>
+          <div style="min-width: 180px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_function') || 'Function'}</label>
+            <select id="jdLibFunction" onchange="onJDLibFilterChange()" style="width: 100%;">
+              <option value="">${t('opt_all_functions') || 'All functions'}</option>
+              ${functionsList.map(f => `<option value="${f}" ${jdLibFilters.function === f ? 'selected' : ''}>${f}</option>`).join('')}
+            </select>
+          </div>
+          <div style="min-width: 160px;">
+            <label style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px;">${t('lbl_jd_status') || 'JD status'}</label>
+            <select id="jdLibStatus" onchange="onJDLibFilterChange()" style="width: 100%;">
+              <option value="all" ${jdLibFilters.status === 'all' ? 'selected' : ''}>${t('opt_all') || 'All'}</option>
+              <option value="has_jd" ${jdLibFilters.status === 'has_jd' ? 'selected' : ''}>${t('opt_with_jd') || 'With JD'}</option>
+              <option value="no_jd" ${jdLibFilters.status === 'no_jd' ? 'selected' : ''}>${t('opt_without_jd') || 'Missing JD'}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">${t('sec_roles') || 'Roles'}</div>
+          <span class="text-xs text-muted">${filtered.length} ${t('txt_of') || 'of'} ${totalRoles}</span>
+        </div>
+        <div class="panel-body no-pad">
+          ${filtered.length === 0 ? `
+            <div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_roles_match') || 'No roles match your filters'}</div></div>
+          ` : `
+            <table class="table">
+              <thead><tr>
+                <th>${t('th_function') || 'Function'}</th>
+                <th>${t('th_role') || 'Role'}</th>
+                <th>${t('th_grade') || 'Grade'}</th>
+                <th>${t('th_jd_status') || 'JD status'}</th>
+                <th>${t('th_filename') || 'Filename'}</th>
+                <th style="text-align: right;">${t('th_actions') || 'Actions'}</th>
+              </tr></thead>
+              <tbody>${filtered.map(r => {
+                const has = !!r.standard_jd_path;
+                return `
+                  <tr>
+                    <td><span class="text-xs text-muted">${r._functionName || '—'}</span></td>
+                    <td><div class="role-title">${r.title || '—'}</div>${r._subFunctionName ? `<div class="role-meta">${r._subFunctionName}</div>` : ''}</td>
+                    <td>${r.grade || '—'}</td>
+                    <td>${has ? `<span class="badge badge-success">✓ ${t('st_has_jd') || 'Has JD'}</span>` : `<span class="badge badge-warning">${t('st_no_jd') || 'No JD'}</span>`}</td>
+                    <td><span class="text-xs text-muted">${has ? (r.standard_jd_filename || '—') : '—'}</span></td>
+                    <td style="text-align: right; white-space: nowrap;">
+                      ${has ? `<button class="btn btn-secondary btn-sm" onclick="viewLibraryJD('${escJs(r.id)}')">${t('btn_view') || 'View'}</button>` : ''}
+                      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('upl-${escJs(r.id)}').click()">${has ? (t('btn_replace') || 'Replace') : (t('btn_upload') || 'Upload')}</button>
+                      <input type="file" id="upl-${esc(r.id)}" accept=".pdf" style="display: none;" onchange="onLibraryJDFileSelected('${escJs(r.id)}', this)">
+                      ${has ? `<button class="btn btn-secondary btn-sm" onclick="confirmRemoveLibraryJD('${escJs(r.id)}')" style="color: var(--danger);">${t('btn_remove') || 'Remove'}</button>` : ''}
+                    </td>
+                  </tr>
+                `;
+              }).join('')}</tbody>
+            </table>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Re-render with debounce on the search input. Other filters change instantly.
+let _jdLibFilterTimer = null;
+function onJDLibFilterChange() {
+  const search = document.getElementById('jdLibSearch')?.value || '';
+  const fn = document.getElementById('jdLibFunction')?.value || '';
+  const st = document.getElementById('jdLibStatus')?.value || 'all';
+  const hadFocus = document.activeElement?.id === 'jdLibSearch';
+  jdLibFilters = { function: fn, status: st, search };
+  // Debounce search re-render so we don't lose focus on every keystroke
+  clearTimeout(_jdLibFilterTimer);
+  _jdLibFilterTimer = setTimeout(() => {
+    renderJDLibrary();
+    if (hadFocus) {
+      const el = document.getElementById('jdLibSearch');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    }
+  }, 150);
+}
+
+// File picker callback. Validate, upload to Storage, update role row.
+async function onLibraryJDFileSelected(roleLibraryId, fileInput) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') { alert(t('err_pdf_only') || 'Only PDF files are allowed.'); fileInput.value = ''; return; }
+  if (file.size > 10 * 1024 * 1024) { alert(t('err_too_big') || 'File too large (max 10MB).'); fileInput.value = ''; return; }
+  
+  const role = state.roleLibMaps.byId[roleLibraryId];
+  if (!role) { toast('Role not found', true); return; }
+  
+  toast(t('msg_uploading') || 'Uploading…');
+  try {
+    const ts = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const tenantId = state.currentMember?.tenant_id || state.currentTenantId;
+    const storagePath = `jd-library/${tenantId}/${roleLibraryId}-${ts}-${safeName}`;
+    const { error: upErr } = await sb.storage
+      .from('hire-medha')
+      .upload(storagePath, file, { contentType: 'application/pdf', upsert: false });
+    if (upErr) throw upErr;
+    const { error: updErr } = await sb
+      .from('role_library')
+      .update({
+        standard_jd_path: storagePath,
+        standard_jd_filename: file.name,
+        standard_jd_uploaded_at: new Date().toISOString(),
+        standard_jd_uploaded_by: state.currentAuthUser?.id || null,
+      })
+      .eq('id', roleLibraryId);
+    if (updErr) throw updErr;
+    // Update in-memory cache so the UI re-renders correctly
+    role.standard_jd_path = storagePath;
+    role.standard_jd_filename = file.name;
+    role.standard_jd_uploaded_at = new Date().toISOString();
+    role.standard_jd_uploaded_by = state.currentAuthUser?.id || null;
+    fileInput.value = '';
+    toast(t('msg_uploaded') || 'JD uploaded ✓');
+    renderJDLibrary();
+  } catch (e) {
+    console.error('Library JD upload failed:', e);
+    toast('Upload failed: ' + (e.message || e), true);
+    fileInput.value = '';
+  }
+}
+
+// Confirm + remove the JD attachment from a role.
+// NOTE: We only NULL the columns on role_library; we do NOT delete the file
+// from Storage (in case some old req still references that path indirectly,
+// though our snapshot-at-submit design means this is unlikely to matter).
+function confirmRemoveLibraryJD(roleLibraryId) {
+  const role = state.roleLibMaps.byId[roleLibraryId];
+  if (!role || !role.standard_jd_path) return;
+  if (!confirm((t('confirm_remove_jd') || 'Remove the standard JD for') + ` "${role.title || 'this role'}"?`)) return;
+  removeLibraryJD(roleLibraryId);
+}
+
+async function removeLibraryJD(roleLibraryId) {
+  const role = state.roleLibMaps.byId[roleLibraryId];
+  if (!role) return;
+  try {
+    const { error } = await sb
+      .from('role_library')
+      .update({
+        standard_jd_path: null,
+        standard_jd_filename: null,
+        standard_jd_uploaded_at: null,
+        standard_jd_uploaded_by: null,
+      })
+      .eq('id', roleLibraryId);
+    if (error) throw error;
+    role.standard_jd_path = null;
+    role.standard_jd_filename = null;
+    role.standard_jd_uploaded_at = null;
+    role.standard_jd_uploaded_by = null;
+    toast(t('msg_removed') || 'JD removed');
+    renderJDLibrary();
+  } catch (e) {
+    console.error('Library JD removal failed:', e);
+    toast('Remove failed: ' + (e.message || e), true);
+  }
+}
+
+// ============================================================
+// DISPATCH
+// ============================================================
+// ============================================================
+// GAP 3 — HIRES & ONBOARDING PAGE
+// ============================================================
+// Multi-tab page tracking the post-offer lifecycle:
+//   • This week's starts (recruiter focus): hires whose intended_start_date is
+//     in the past 7 days OR upcoming 14 days, that haven't had day-1 logged.
+//   • Probation reviews due (HRBP focus): state.onboardings whose probation_end_date
+//     has passed but probation_outcome is still 'pending' or NULL.
+//   • Recent exits (HRBP/leadership): people who left in the last 90 days.
+
+// Helper: compute pending counts used by the sidebar badge.
+function computeOnboardingCounts() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const twoWeeks = new Date(today); twoWeeks.setDate(twoWeeks.getDate() + 14);
+  const day1Pending = state.onboardings.filter(o => {
+    if (o.startStatus) return false;  // already logged
+    if (!o.intendedStartDate) return false;
+    const sd = new Date(o.intendedStartDate);
+    return sd <= twoWeeks;  // imminent or overdue
+  }).length;
+  const probationPending = state.onboardings.filter(o => {
+    if (o.probationOutcome && o.probationOutcome !== 'pending') return false;
+    if (!o.probationEndDate) return false;
+    return new Date(o.probationEndDate) <= today;  // probation period reached
+  }).length;
+  return { day1Pending, probationPending };
+}
+
+// Build a friendly label + relative timing string (e.g. "starts in 3 days", "started 5 days ago").
+function relativeDay(dateStr) {
+  if (!dateStr) return '—';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr); d.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return 'today';
+  if (diff > 0) return `in ${diff} day${diff === 1 ? '' : 's'}`;
+  return `${Math.abs(diff)} day${Math.abs(diff) === 1 ? '' : 's'} ago`;
+}
+
+// Format a date as "Mon DD" or "—" if missing.
+function fmtShortDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Map status code to pretty label.
+const START_STATUS_LABELS = {
+  joined: 'Joined',
+  delayed_start: 'Delayed start',
+  no_show: 'No-show',
+  withdrew_pre_start: 'Withdrew before start',
+};
+const PROBATION_STATUS_LABELS = {
+  passed: 'Passed',
+  failed: 'Failed',
+  extended: 'Extended',
+  resigned_during: 'Resigned during',
+  pending: 'Pending review',
+};
+const EXIT_INITIATOR_LABELS = {
+  employee: 'Employee resigned',
+  company: 'Company-initiated',
+};
+
+// Build a chip from a status code.
+function statusChip(code, labels) {
+  if (!code || code === 'pending') return `<span class="chip chip-gray">${labels[code] || 'Not logged'}</span>`;
+  const goodCodes  = new Set(['joined', 'passed']);
+  const badCodes   = new Set(['no_show', 'failed', 'resigned_during', 'withdrew_pre_start']);
+  const warnCodes  = new Set(['delayed_start', 'extended']);
+  let cls = 'chip-gray';
+  if (goodCodes.has(code)) cls = 'chip-green';
+  else if (badCodes.has(code)) cls = 'chip-red';
+  else if (warnCodes.has(code)) cls = 'chip-amber';
+  return `<span class="chip ${cls}">${labels[code] || code}</span>`;
+}
+
+// Resolve display info for an onboarding row (candidate name, req, etc.) so
+// the table doesn't have to re-look-up everywhere.
+function enrichOnboarding(o) {
+  // Use applicationId to find matching candidate (more reliable than candidateId
+  // since candidate could have been deleted, but app should still resolve)
+  const cand = state.candidates.find(c => c._appDbId === o.applicationId);
+  const req  = state.requisitions.find(r => r._dbId === o.requisitionId)
+            || (cand && state.requisitions.find(r => r.id === cand.reqId));
+  return {
+    ...o,
+    candidateName: cand?.name || 'Unknown',
+    candidateId: cand?.id || null,
+    candDbId: cand?._dbId || o.candidateId,
+    reqTitle: req?.jobTitle || req?.position_title || '—',
+    reqCode: req?.code || req?.reqCode || '—',
+    reqId: req?.id || null,
+    intendedRel: relativeDay(o.intendedStartDate),
+    probationRel: relativeDay(o.probationEndDate),
+  };
+}
+
+function renderOnboarding() {
+  const main = document.getElementById('mainView');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const ninetyDaysAgo = new Date(today); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+  // === BUCKET ROWS BY TAB ===
+  const allEnriched = state.onboardings.map(enrichOnboarding);
+
+  // Tab 1: This week's starts — intended_start in last 7 days or next 14 days
+  const starts = allEnriched.filter(o => {
+    if (!o.intendedStartDate) return false;
+    const sd = new Date(o.intendedStartDate);
+    const daysFromToday = (sd - today) / 86400000;
+    return daysFromToday >= -30 && daysFromToday <= 14;
+  }).sort((a, b) => new Date(a.intendedStartDate) - new Date(b.intendedStartDate));
+
+  // Tab 2: Probation reviews due — probation_end_date passed, outcome still pending
+  const reviews = allEnriched.filter(o => {
+    if (!o.probationEndDate) return false;
+    if (o.probationOutcome && o.probationOutcome !== 'pending') return false;
+    return new Date(o.probationEndDate) <= today;
+  }).sort((a, b) => new Date(a.probationEndDate) - new Date(b.probationEndDate));
+
+  // Tab 3: Recent exits — exit_date in the last 90 days OR probation outcome is fail/resigned
+  const exits = allEnriched.filter(o => {
+    if (o.exitDate && new Date(o.exitDate) >= ninetyDaysAgo) return true;
+    if (['failed', 'resigned_during'].includes(o.probationOutcome) &&
+        o.probationLoggedAt && new Date(o.probationLoggedAt) >= ninetyDaysAgo) return true;
+    return false;
+  }).sort((a, b) => {
+    const ad = new Date(a.exitDate || a.probationLoggedAt || 0);
+    const bd = new Date(b.exitDate || b.probationLoggedAt || 0);
+    return bd - ad;  // newest first
+  });
+
+  // === RENDER ===
+  const tabBtn = (id, label, count) => `
+    <button class="role-btn ${state.onboardingTab === id ? 'active' : ''}"
+            onclick="setOnboardingTab('${id}')" style="margin-right: 0.5rem;">
+      ${label}${count > 0 ? ` <span style="display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; background:rgba(0,0,0,0.08); border-radius:9px; font-size:11px; font-weight:600;">${count}</span>` : ''}
+    </button>`;
+
+  let body = '';
+  if (state.onboardingTab === 'starts') {
+    body = renderOnboardingStartsTab(starts);
+  } else if (state.onboardingTab === 'reviews') {
+    body = renderOnboardingReviewsTab(reviews);
+  } else if (state.onboardingTab === 'exits') {
+    body = renderOnboardingExitsTab(exits);
+  }
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Hires &amp; Onboarding</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">Track post-offer lifecycle: day 1 status, probation outcomes, and exits.</p>
+
+      <div class="card" style="padding: 1rem; margin-bottom: 1rem;">
+        <div style="display:flex; align-items:center; gap:0.25rem; flex-wrap:wrap;">
+          ${tabBtn('starts',  'This week\u2019s starts', starts.filter(o => !o.startStatus).length)}
+          ${tabBtn('reviews', 'Probation reviews due', reviews.length)}
+          ${tabBtn('exits',   'Recent exits', exits.length)}
+        </div>
+      </div>
+
+      ${body}
+    </div>
+  `;
+}
+
+// === Tab renderers ==========================================================
+
+function renderOnboardingStartsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No upcoming starts.</div>
+      <div style="font-size: 12px;">When a candidate's offer is accepted, they appear here so the recruiter can log day-1 status.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => {
+    const overdue = !o.startStatus && new Date(o.intendedStartDate) < new Date();
+    const rowStyle = overdue ? 'background: #fff8e1;' : '';
+    return `<tr style="${rowStyle}">
+      <td><strong>${o.candidateName}</strong></td>
+      <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+      <td>${fmtShortDate(o.intendedStartDate)}<div class="text-xs text-muted">${o.intendedRel}</div></td>
+      <td>${o.startStatus ? statusChip(o.startStatus, START_STATUS_LABELS) : '<span class="chip chip-amber">Pending</span>'}</td>
+      <td style="text-align:right;">
+        <button class="btn btn-secondary btn-sm" onclick="openLogDay1('${o._dbId}')">${o.startStatus ? 'Update' : 'Log day 1'}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Candidate</th><th>Position</th><th>Intended start</th><th>Day-1 status</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderOnboardingReviewsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No probation reviews due.</div>
+      <div style="font-size: 12px;">When a hire's 30-day probation period ends, the review appears here for the HRBP to log the outcome.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => {
+    const overdueDays = Math.max(0, Math.floor((new Date() - new Date(o.probationEndDate)) / 86400000));
+    return `<tr>
+      <td><strong>${o.candidateName}</strong></td>
+      <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+      <td>${fmtShortDate(o.actualStartDate || o.intendedStartDate)}</td>
+      <td>${fmtShortDate(o.probationEndDate)}
+        ${overdueDays > 0 ? `<div class="text-xs" style="color:var(--blaze, #e0592a); font-weight:500;">${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue</div>` : ''}
+      </td>
+      <td style="text-align:right;">
+        <button class="btn btn-primary btn-sm" onclick="openLogProbation('${o._dbId}')">Log outcome</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Employee</th><th>Position</th><th>Started</th><th>Probation ends</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderOnboardingExitsTab(rows) {
+  if (rows.length === 0) {
+    return `<div class="card" style="padding: 2rem; text-align: center; color: var(--muted);">
+      <div style="font-size: 14px; margin-bottom: 4px;">No exits in the last 90 days.</div>
+      <div style="font-size: 12px;">Hopefully it stays that way. When someone leaves during or after probation, log the exit here.</div>
+    </div>`;
+  }
+  const rowsHtml = rows.map(o => `<tr>
+    <td><strong>${o.candidateName}</strong></td>
+    <td><span class="text-xs text-muted">${o.reqCode}</span> ${o.reqTitle}</td>
+    <td>${fmtShortDate(o.exitDate || o.probationLoggedAt)}</td>
+    <td>${statusChip(o.probationOutcome, PROBATION_STATUS_LABELS)}</td>
+    <td>${o.exitInitiator ? EXIT_INITIATOR_LABELS[o.exitInitiator] : '—'}</td>
+    <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${o.exitReason || ''}">
+      ${o.exitReason || '—'}
+    </td>
+    <td style="text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="openLogExit('${o._dbId}')">Edit</button>
+    </td>
+  </tr>`).join('');
+  return `<div class="card">
+    <table class="data-table" style="width:100%;">
+      <thead><tr>
+        <th>Person</th><th>Position</th><th>Exit date</th><th>Probation</th><th>Initiator</th><th>Reason</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function setOnboardingTab(tab) {
+  state.onboardingTab = tab;
+  render();
+}
+
+// === Modal forms ============================================================
+
+function openLogDay1(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Log day 1 — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle} · Intended start: ${fmtShortDate(o.intendedStartDate)}</p>
+
+    <div class="form-group">
+      <label class="required">Status</label>
+      <select id="day1Status" onchange="onDay1StatusChange()">
+        <option value="">— select —</option>
+        <option value="joined" ${o.startStatus === 'joined' ? 'selected' : ''}>Joined as planned</option>
+        <option value="delayed_start" ${o.startStatus === 'delayed_start' ? 'selected' : ''}>Joined late (delayed start)</option>
+        <option value="no_show" ${o.startStatus === 'no_show' ? 'selected' : ''}>No-show</option>
+        <option value="withdrew_pre_start" ${o.startStatus === 'withdrew_pre_start' ? 'selected' : ''}>Withdrew before start date</option>
+      </select>
+    </div>
+    <div class="form-group" id="actualStartGroup" style="${o.startStatus === 'joined' || o.startStatus === 'delayed_start' ? '' : 'display:none;'}">
+      <label>Actual start date</label>
+      <input type="date" id="actualStart" value="${o.actualStartDate || o.intendedStartDate || ''}">
+      <div class="text-xs text-muted">If different from intended start.</div>
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="day1Notes" rows="2" placeholder="Optional context (e.g. 'visa delay', 'replaced by candidate B')">${o.notes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogDay1('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+function onDay1StatusChange() {
+  const status = document.getElementById('day1Status').value;
+  const grp = document.getElementById('actualStartGroup');
+  grp.style.display = (status === 'joined' || status === 'delayed_start') ? '' : 'none';
+}
+
+async function submitLogDay1(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const status = document.getElementById('day1Status').value;
+  if (!status) { alert('Pick a status'); return; }
+  o.startStatus = status;
+  o.startLoggedAt = new Date().toISOString();
+  o.startLoggedBy = state.currentAuthUser?.id || null;
+  if (status === 'joined' || status === 'delayed_start') {
+    o.actualStartDate = document.getElementById('actualStart').value || o.intendedStartDate;
+    // If actual start differs from intended, recompute probation_end_date
+    if (o.actualStartDate) {
+      const probEnd = new Date(o.actualStartDate);
+      probEnd.setDate(probEnd.getDate() + 30);
+      o.probationEndDate = probEnd.toISOString().slice(0, 10);
+    }
+  } else {
+    o.actualStartDate = null;
+    // No-show / withdrew = probation outcome doesn't apply
+    o.probationOutcome = null;
+  }
+  o.notes = document.getElementById('day1Notes').value;
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Day 1 status logged', false);
+    render();
+  } catch (e) {
+    console.error('day1 save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+function openLogProbation(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Log probation outcome — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle} · Started ${fmtShortDate(o.actualStartDate || o.intendedStartDate)} · Probation ended ${fmtShortDate(o.probationEndDate)}</p>
+
+    <div class="form-group">
+      <label class="required">Outcome</label>
+      <select id="probOutcome" onchange="onProbOutcomeChange()">
+        <option value="">— select —</option>
+        <option value="passed" ${o.probationOutcome === 'passed' ? 'selected' : ''}>Passed</option>
+        <option value="failed" ${o.probationOutcome === 'failed' ? 'selected' : ''}>Failed (terminated)</option>
+        <option value="extended" ${o.probationOutcome === 'extended' ? 'selected' : ''}>Extended</option>
+        <option value="resigned_during" ${o.probationOutcome === 'resigned_during' ? 'selected' : ''}>Employee resigned</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="probEndGroup" style="${o.probationOutcome === 'extended' ? '' : 'display:none;'}">
+      <label class="required">New probation end date</label>
+      <input type="date" id="newProbEnd" value="${o.probationEndDate || ''}">
+    </div>
+
+    <div class="form-group" id="exitGroup" style="${['failed','resigned_during'].includes(o.probationOutcome) ? '' : 'display:none;'}">
+      <label class="required">Exit date</label>
+      <input type="date" id="exitDate" value="${o.exitDate || ''}">
+      <div class="form-group" style="margin-top:0.75rem;">
+        <label>Exit reason</label>
+        <textarea id="exitReason" rows="2" placeholder="Free text — e.g. 'Performance below expectations', 'Found another job', 'Personal reasons'">${o.exitReason || ''}</textarea>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Notes for HR record</label>
+      <textarea id="probNotes" rows="2" placeholder="Optional. Required if outcome is Failed.">${o.probationNotes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogProbation('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+function onProbOutcomeChange() {
+  const v = document.getElementById('probOutcome').value;
+  document.getElementById('probEndGroup').style.display = (v === 'extended') ? '' : 'none';
+  document.getElementById('exitGroup').style.display    = (v === 'failed' || v === 'resigned_during') ? '' : 'none';
+}
+
+async function submitLogProbation(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const outcome = document.getElementById('probOutcome').value;
+  if (!outcome) { alert('Pick an outcome'); return; }
+  const notes = document.getElementById('probNotes').value.trim();
+  if (outcome === 'failed' && !notes) {
+    alert('Please add notes when marking probation as failed (required for HR record).');
+    return;
+  }
+  o.probationOutcome = outcome;
+  o.probationNotes = notes || null;
+  o.probationLoggedAt = new Date().toISOString();
+  o.probationLoggedBy = state.currentAuthUser?.id || null;
+  if (outcome === 'extended') {
+    const newEnd = document.getElementById('newProbEnd').value;
+    if (!newEnd) { alert('Pick a new probation end date'); return; }
+    o.probationEndDate = newEnd;
+  }
+  if (outcome === 'failed' || outcome === 'resigned_during') {
+    o.exitDate = document.getElementById('exitDate').value || null;
+    o.exitReason = document.getElementById('exitReason').value.trim() || null;
+    o.exitInitiator = (outcome === 'failed') ? 'company' : 'employee';
+  } else {
+    o.exitDate = null;
+    o.exitReason = null;
+    o.exitInitiator = null;
+  }
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Probation outcome logged', false);
+    render();
+  } catch (e) {
+    console.error('probation save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+function openLogExit(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const enr = enrichOnboarding(o);
+  openModal(`
+    <div class="modal-header"><h2>Edit exit — ${enr.candidateName}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${enr.reqTitle}</p>
+
+    <div class="form-group">
+      <label class="required">Exit date</label>
+      <input type="date" id="exitDateE" value="${o.exitDate || ''}">
+    </div>
+    <div class="form-group">
+      <label class="required">Initiator</label>
+      <select id="exitInitiatorE">
+        <option value="">— select —</option>
+        <option value="employee" ${o.exitInitiator === 'employee' ? 'selected' : ''}>Employee resigned</option>
+        <option value="company" ${o.exitInitiator === 'company' ? 'selected' : ''}>Company-initiated</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Reason</label>
+      <textarea id="exitReasonE" rows="3">${o.exitReason || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitLogExit('${onboardingDbId}')">Save</button>
+    </div>
+  `);
+}
+
+async function submitLogExit(onboardingDbId) {
+  const o = state.onboardings.find(x => x._dbId === onboardingDbId);
+  if (!o) return;
+  const exitDate = document.getElementById('exitDateE').value;
+  const initiator = document.getElementById('exitInitiatorE').value;
+  if (!exitDate || !initiator) { alert('Exit date and initiator are required'); return; }
+  o.exitDate = exitDate;
+  o.exitInitiator = initiator;
+  o.exitReason = document.getElementById('exitReasonE').value.trim() || null;
+  try {
+    await saveOnboardingRecord(o);
+    closeModal();
+    toast('Exit details saved', false);
+    render();
+  } catch (e) {
+    console.error('exit save failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+// ============================================================
+// END GAP 3
+// ============================================================
+
+// ============================================================
+// GAP 2 — CHANNEL COSTS PAGE (Head of TA admin)
+// ============================================================
+// Periodic cost entries: one row per "we paid $X for source Y for date range A-B".
+// Used by the dashboard to compute cost-per-hire by source.
+
+const SOURCE_OPTIONS = [
+  { value: 'linkedin',    label: 'LinkedIn'    },
+  { value: 'job_board',   label: 'Job Board'   },
+  { value: 'agency',      label: 'Agency'      },
+  { value: 'career_site', label: 'Career Site' },
+  { value: 'referral',    label: 'Referral'    },
+  { value: 'direct',      label: 'Direct'      },
+  { value: 'other',       label: 'Other'       },
+];
+const SOURCE_LABEL_MAP = Object.fromEntries(SOURCE_OPTIONS.map(s => [s.value, s.label]));
+
+function fmtUsd(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function renderChannelCosts() {
+  const main = document.getElementById('mainView');
+  if (!isHeadOfTA()) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'Head of TA access required'}</div></div>`;
+    return;
+  }
+
+  // Aggregate totals for the page header
+  const totalCost = state.channelCosts.reduce((sum, c) => sum + (c.costUsd || 0), 0);
+  const bySource = {};
+  state.channelCosts.forEach(c => {
+    bySource[c.source] = (bySource[c.source] || 0) + (c.costUsd || 0);
+  });
+
+  // Build rows
+  const rows = [...channelCosts].sort((a, b) => new Date(b.periodStart) - new Date(a.periodStart));
+  const rowsHtml = rows.length === 0
+    ? `<tr><td colspan="6" style="text-align:center; padding: 2rem; color: var(--muted);">
+         No channel costs logged yet. Click "Add cost" to record a periodic charge.
+       </td></tr>`
+    : rows.map(c => `<tr>
+        <td><strong>${SOURCE_LABEL_MAP[c.source] || c.source}</strong></td>
+        <td>${fmtShortDate(c.periodStart)} → ${fmtShortDate(c.periodEnd)}</td>
+        <td class="tbl-num"><strong>${fmtUsd(c.costUsd)}</strong></td>
+        <td>${c.notes || '<span class="text-muted">—</span>'}</td>
+        <td class="text-xs text-muted">${getUserName(c.createdBy) || ''}</td>
+        <td style="text-align:right; white-space: nowrap;">
+          <button class="btn btn-secondary btn-sm" onclick="openEditChannelCost('${escJs(c._dbId)}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteChannelCost('${escJs(c._dbId)}')">Delete</button>
+        </td>
+      </tr>`).join('');
+
+  // Source breakdown summary
+  const sourceSummary = Object.keys(bySource).length === 0
+    ? `<div class="text-muted" style="padding: 0.5rem;">No data yet.</div>`
+    : Object.entries(bySource).sort((a, b) => b[1] - a[1]).map(([src, total]) => `
+        <div style="display: flex; justify-content: space-between; padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <span>${SOURCE_LABEL_MAP[src] || src}</span>
+          <strong>${fmtUsd(total)}</strong>
+        </div>`).join('');
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Channel Costs</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">
+        Track periodic costs (subscriptions, retainers, annual fees) for each sourcing channel. These feed the dashboard's cost-per-hire calculation alongside per-candidate costs (agency fees, referral bonuses).
+      </p>
+
+      <div class="form-grid-2" style="margin-bottom: 1.25rem;">
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">Total recorded</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${fmtUsd(totalCost)}</div>
+          <div class="text-xs text-muted">${rows.length} entries</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">By source</div>
+          ${sourceSummary}
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <strong>All entries</strong>
+          <button class="btn btn-primary" onclick="openAddChannelCost()">+ Add cost</button>
+        </div>
+        <table class="data-table" style="width:100%;">
+          <thead><tr>
+            <th>Source</th><th>Period</th><th>Amount</th><th>Notes</th><th>Logged by</th><th></th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function openAddChannelCost() {
+  const today = new Date().toISOString().slice(0, 10);
+  const oneMonthLater = new Date();
+  oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
+  const oneMonthStr = oneMonthLater.toISOString().slice(0, 10);
+  _renderChannelCostModal({
+    title: 'Add channel cost',
+    cost: { source: 'linkedin', periodStart: today, periodEnd: oneMonthStr, costUsd: '', notes: '' },
+    saveBtn: 'Save',
+    onSave: 'submitAddChannelCost()'
+  });
+}
+
+function openEditChannelCost(dbId) {
+  const c = state.channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  _renderChannelCostModal({
+    title: 'Edit channel cost',
+    cost: c,
+    saveBtn: 'Update',
+    onSave: `submitEditChannelCost('${dbId}')`
+  });
+}
+
+function _renderChannelCostModal({ title, cost, saveBtn, onSave }) {
+  const sourceOptions = SOURCE_OPTIONS.map(s =>
+    `<option value="${s.value}" ${cost.source === s.value ? 'selected' : ''}>${s.label}</option>`
+  ).join('');
+  openModal(`
+    <div class="modal-header"><h2>${title}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">Record a cost paid for a sourcing channel over a date range.</p>
+
+    <div class="form-group">
+      <label class="required">Source</label>
+      <select id="ccSource">${sourceOptions}</select>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">Period start</label>
+        <input type="date" id="ccPeriodStart" value="${cost.periodStart || ''}">
+      </div>
+      <div class="form-group">
+        <label class="required">Period end</label>
+        <input type="date" id="ccPeriodEnd" value="${cost.periodEnd || ''}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="required">Amount (USD)</label>
+      <input type="number" id="ccAmount" min="0" step="0.01" value="${cost.costUsd ?? ''}" placeholder="e.g. 1500.00">
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="ccNotes" rows="2" placeholder="Optional context, e.g. 'Q1 2026 subscription', 'Retained search for VP role'">${cost.notes || ''}</textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="${onSave}">${saveBtn}</button>
+    </div>
+  `);
+}
+
+function _readChannelCostFromForm() {
+  const source = document.getElementById('ccSource').value;
+  const periodStart = document.getElementById('ccPeriodStart').value;
+  const periodEnd = document.getElementById('ccPeriodEnd').value;
+  const amountRaw = document.getElementById('ccAmount').value;
+  const notes = document.getElementById('ccNotes').value.trim();
+  if (!source || !periodStart || !periodEnd || amountRaw === '') {
+    alert('Fill all required fields (source, period start, period end, amount).');
+    return null;
+  }
+  if (new Date(periodEnd) < new Date(periodStart)) {
+    alert('Period end must be on or after period start.');
+    return null;
+  }
+  const costUsd = parseFloat(amountRaw);
+  if (isNaN(costUsd) || costUsd < 0) {
+    alert('Amount must be a non-negative number.');
+    return null;
+  }
+  return { source, periodStart, periodEnd, costUsd, notes };
+}
+
+async function submitAddChannelCost() {
+  const data = _readChannelCostFromForm();
+  if (!data) return;
+  const newRow = { ...data, createdBy: state.currentAuthUser?.id || null };
+  try {
+    await saveChannelCostRecord(newRow);
+    state.channelCosts.push(newRow);
+    closeModal();
+    toast('Channel cost saved', false);
+    render();
+  } catch (e) {
+    console.error('add channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+async function submitEditChannelCost(dbId) {
+  const c = state.channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  const data = _readChannelCostFromForm();
+  if (!data) return;
+  Object.assign(c, data);
+  try {
+    await saveChannelCostRecord(c);
+    closeModal();
+    toast('Channel cost updated', false);
+    render();
+  } catch (e) {
+    console.error('edit channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+async function confirmDeleteChannelCost(dbId) {
+  const c = state.channelCosts.find(x => x._dbId === dbId);
+  if (!c) return;
+  const confirmed = confirm(`Delete this entry?\n\n${SOURCE_LABEL_MAP[c.source] || c.source} · ${fmtUsd(c.costUsd)} · ${fmtShortDate(c.periodStart)} → ${fmtShortDate(c.periodEnd)}\n\nThis can't be undone (soft delete only — record stays in DB).`);
+  if (!confirmed) return;
+  try {
+    await deleteChannelCostRecord(c);
+    state.channelCosts = state.channelCosts.filter(x => x._dbId !== dbId);
+    toast('Channel cost deleted', false);
+    render();
+  } catch (e) {
+    console.error('delete channel cost failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+// ============================================================
+// END GAP 2
+// ============================================================
+
+// ============================================================
+// EXEC AUTHORITY — admin page (Head of TA)
+// ============================================================
+// Lets Head of TA / admin mark which employees are Function Heads or the CEO.
+// This drives the auto-detection in the new-req form: if the picked Hiring
+// Manager is a FH or CEO, the platform routes the req via exec_track (skip
+// HRBP+FH, go directly to CEO).
+//
+// One-time setup, rarely changes after launch.
+
+function renderExecAuthority() {
+  const main = document.getElementById('mainView');
+  if (!isHeadOfTA()) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'Head of TA access required'}</div></div>`;
+    return;
+  }
+
+  // Filter employees with roles likely to be exec — we don't list all 745 here.
+  // Show: anyone already flagged + anyone whose position_title contains 'Head', 'Chief', 'CEO', 'Director'.
+  const allEmps = state.employeeMaps.list || [];
+  const execCandidates = allEmps.filter(e =>
+    e.is_function_head || e.is_ceo ||
+    /head|chief|ceo|director|president/i.test(e.position_title || '')
+  ).sort((a, b) => {
+    // CEO first, then FHs, then alphabetical
+    if (a.is_ceo) return -1;
+    if (b.is_ceo) return 1;
+    if (a.is_function_head && !b.is_function_head) return -1;
+    if (b.is_function_head && !a.is_function_head) return 1;
+    return (a.name_en || '').localeCompare(b.name_en || '');
+  });
+
+  const fhCount  = allEmps.filter(e => e.is_function_head).length;
+  const ceoCount = allEmps.filter(e => e.is_ceo).length;
+
+  const rowsHtml = execCandidates.length === 0
+    ? `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--muted);">
+         No employees found whose title contains Head / Chief / CEO / Director / President.<br>
+         Use the search below to find any employee by name.
+       </td></tr>`
+    : execCandidates.map(e => `<tr>
+        <td><strong>${e.name_en || e.name_kh || '—'}</strong>
+            ${e.employee_code ? `<div class="text-xs text-muted">${e.employee_code}</div>` : ''}
+        </td>
+        <td>${e.position_title || '—'}</td>
+        <td>${e.company || '—'}</td>
+        <td style="text-align:center;">
+          <input type="checkbox" id="fh-${e.id}" ${e.is_function_head ? 'checked' : ''}
+                 ${e.is_ceo ? 'disabled' : ''}
+                 onchange="toggleFunctionHead('${e.id}', this.checked)"
+                 title="${e.is_ceo ? 'CEO is implicitly senior to Function Heads' : 'Mark as Function Head'}">
+        </td>
+        <td style="text-align:center;">
+          <input type="checkbox" id="ceo-${e.id}" ${e.is_ceo ? 'checked' : ''}
+                 onchange="toggleCeo('${e.id}', this.checked)"
+                 title="Only one person can be CEO">
+        </td>
+      </tr>`).join('');
+
+  main.innerHTML = `
+    <div class="container-narrow" style="padding: 1.5rem 0;">
+      <button class="detail-back" onclick="setView('dashboard')">${ICONS.back || '←'} ${t('btn_back_dash') || 'Dashboard'}</button>
+      <h1 style="margin: 0.5rem 0 0.25rem;">Exec Authority</h1>
+      <p style="color: var(--muted); margin: 0 0 1.25rem;">
+        Mark which employees are Function Heads or the CEO. When someone picks one of these people as a Hiring Manager on a new requisition, the platform automatically routes the req via the exec workflow (skip HRBP + FH approval, go straight to the CEO).
+      </p>
+
+      <div class="form-grid-2" style="margin-bottom: 1.25rem;">
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">Function Heads</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${fhCount}</div>
+          <div class="text-xs text-muted">people marked</div>
+        </div>
+        <div class="card" style="padding: 1rem;">
+          <div class="text-xs text-muted" style="text-transform: uppercase; letter-spacing: 0.05em;">CEO</div>
+          <div style="font-size: 1.75rem; font-weight: 600; margin-top: 0.25rem;">${ceoCount}</div>
+          <div class="text-xs text-muted">${ceoCount === 0 ? 'not yet marked' : (ceoCount === 1 ? 'set' : '⚠ multiple — should be 1')}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="padding: 0.75rem 1rem; border-bottom: 1px solid var(--line, #e5e7eb);">
+          <strong>Senior employee candidates</strong>
+          <div class="text-xs text-muted">Showing employees whose title suggests a senior role + everyone already flagged. Use Supabase directly to mark anyone else.</div>
+        </div>
+        <table class="data-table" style="width:100%;">
+          <thead><tr>
+            <th>Employee</th>
+            <th>Position</th>
+            <th>Company</th>
+            <th style="text-align:center; width: 110px;">Function Head</th>
+            <th style="text-align:center; width: 70px;">CEO</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// === Toggle handlers — write straight to DB on click ===
+
+async function toggleFunctionHead(empId, checked) {
+  try {
+    const { error } = await sb.from('employees')
+      .update({ is_function_head: checked })
+      .eq('id', empId);
+    if (error) throw error;
+    // Update in-memory employee record
+    const emp = (state.employeeMaps.list || []).find(e => e.id === empId);
+    if (emp) emp.is_function_head = checked;
+    toast(checked ? 'Marked as Function Head' : 'Unmarked', false);
+    render();  // refresh counts
+  } catch (e) {
+    console.error('toggleFunctionHead failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+    render();  // re-render to revert checkbox state
+  }
+}
+
+async function toggleCeo(empId, checked) {
+  try {
+    if (checked) {
+      // Defensive: warn if there's already a different CEO
+      const existingCeo = (state.employeeMaps.list || []).find(e => e.is_ceo && e.id !== empId);
+      if (existingCeo) {
+        const proceed = confirm(`${existingCeo.name_en || existingCeo.name_kh} is currently marked as CEO. There can only be one CEO. Replace them?`);
+        if (!proceed) {
+          render();  // revert checkbox
+          return;
+        }
+        // Unmark the old CEO first
+        const { error: clearErr } = await sb.from('employees')
+          .update({ is_ceo: false })
+          .eq('id', existingCeo.id);
+        if (clearErr) throw clearErr;
+        existingCeo.is_ceo = false;
+      }
+    }
+    const { error } = await sb.from('employees')
+      .update({ is_ceo: checked })
+      .eq('id', empId);
+    if (error) throw error;
+    const emp = (state.employeeMaps.list || []).find(e => e.id === empId);
+    if (emp) emp.is_ceo = checked;
+    toast(checked ? 'Marked as CEO' : 'Unmarked CEO', false);
+    render();
+  } catch (e) {
+    console.error('toggleCeo failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+    render();
+  }
+}
+// ============================================================
+// END EXEC WORKFLOW
+// ============================================================
+
+function setView(view) {
+  state.currentView = view;
+  if (view === 'dashboard') {
+    state.selectedReqId = null;
+    state.editingReqId = null;  // exiting any edit-in-progress when going to dashboard
+  }
+  renderHeader();  // refresh nav button active state
+  render();
+}
+function viewReq(id) { state.selectedReqId = id; state.currentView = 'req_detail'; render(); }
+function render() {
+  // Top-level views available to specific roles take precedence over the role dashboard.
+  if (state.currentView === 'jd_library') { renderJDLibrary(); return; }
+  if (state.currentView === 'onboarding') { renderOnboarding(); return; }
+  if (state.currentView === 'channel_costs') { renderChannelCosts(); return; }
+  if (state.currentView === 'exec_authority') { renderExecAuthority(); return; }
+  // The new req form is shared across roles that can raise reqs:
+  // requester (their own), HRBP / Head of TA (on behalf of an exec), admin.
+  // Centralizing the render here means every eligible role gets the same form.
+  if (state.currentView === 'new_req' && (state.currentRole === 'requester' || canRaiseReqOnBehalf())) {
+    const main = document.getElementById('mainView');
+    main.innerHTML = renderNewReqForm();
+    if (state.editingReqId) prefillEditForm(state.editingReqId);
+    return;
+  }
+  if (state.currentRole === 'requester') renderRequester();
+  else if (state.currentRole === 'hrbp') renderHRBP();
+  else if (state.currentRole === 'function_head') renderFunctionHead();
+  else if (state.currentRole === 'ceo') renderCEO();
+  else if (state.currentRole === 'head_ta') renderHeadTA();
+  else if (state.currentRole === 'recruiter') renderRecruiter();
+}
+
+
+// ============================================================
+// EXPORTS — all top-level functions are re-exported for index.html
+// ============================================================
+export {
+  _readChannelCostFromForm,
+  _renderChannelCostModal,
+  addCandidate,
+  addFeedback,
+  approveCEO,
+  approveFH,
+  approveHRBP,
+  assignRecruiters,
+  cancelRevision,
+  checkUnplanned,
+  closeReqModal,
+  computeOnboardingCounts,
+  confirmClose,
+  confirmDeleteChannelCost,
+  confirmRemoveLibraryJD,
+  confirmResume,
+  debugCVExtraction,
+  enrichOnboarding,
+  extractPDFText,
+  fmtShortDate,
+  fmtUsd,
+  moveCandidate,
+  offerResponse,
+  onCOIFileSelected,
+  onCandCVSelected,
+  onCandFieldEdit,
+  onDay1StatusChange,
+  onJDLibFilterChange,
+  onLibraryJDFileSelected,
+  onProbOutcomeChange,
+  onResourceChange,
+  openAddChannelCost,
+  openCancelModal,
+  openEditChannelCost,
+  openHoldModal,
+  openLogDay1,
+  openLogExit,
+  openLogProbation,
+  parseCVText,
+  prefillEditForm,
+  prepareOffer,
+  rejectCandidate,
+  rejectReq,
+  relativeDay,
+  removeLibraryJD,
+  render,
+  renderCEO,
+  renderCEODetail,
+  renderCandCard,
+  renderChannelCosts,
+  renderExecAuthority,
+  renderFHDetail,
+  renderFunctionHead,
+  renderHRBP,
+  renderHRBPDetail,
+  renderHeadTA,
+  renderHeader,
+  renderJDLibrary,
+  renderJDSlot,
+  renderNewReqForm,
+  renderOnboarding,
+  renderOnboardingExitsTab,
+  renderOnboardingReviewsTab,
+  renderOnboardingStartsTab,
+  renderRecruiter,
+  renderRecruiterDetail,
+  renderRequester,
+  renderRequesterDetail,
+  renderTADetail,
+  requestRevision,
+  resumeReq,
+  reviseReq,
+  saveChecks,
+  saveField,
+  scheduleInterview,
+  sendOffer,
+  setAutofilled,
+  setOnboardingTab,
+  setView,
+  statusChip,
+  submitAddChannelCost,
+  submitCancel,
+  submitCandidate,
+  submitEditChannelCost,
+  submitFeedback,
+  submitHold,
+  submitInterview,
+  submitLogDay1,
+  submitLogExit,
+  submitLogProbation,
+  submitNewReq,
+  submitRejection,
+  submitRevision,
+  switchLang,
+  switchRole,
+  switchTab,
+  toggleCeo,
+  toggleFunctionHead,
+  toggleHMField,
+  toggleNewRole,
+  updateChecks,
+  updateSubFunctions,
+  updateUnits,
+  viewCOI,
+  viewCV,
+  viewJD,
+  viewLibraryJD,
+  viewReq,
+};
