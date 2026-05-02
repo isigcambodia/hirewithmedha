@@ -5,7 +5,8 @@
 import { sb } from './config.js';
 import { state } from './state.js';
 import { dbg } from './helpers.js';
-import { ORG_STRUCTURE } from './constants.js';
+import { ORG_STRUCTURE, EXISTING_ROLES } from './constants.js';
+import { closeModal } from './utils.js';
 
 // UI callbacks — index.html wires these at startup so storage stays UI-agnostic.
 let _render = null;
