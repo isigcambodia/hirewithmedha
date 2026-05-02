@@ -176,6 +176,7 @@ import { sb } from './js/config.js';
 import { state } from './js/state.js';
 import { HWM_BUILD, HWM_DEBUG, dbg } from './js/helpers.js';
 import { setOnDataChanged, setNavigateTo, loadEverything } from './js/storage.js';
+import * as Utils from './js/utils.js';
 import * as Views from './js/views.js';
 const { render, renderHeader, setView } = Views;
 
@@ -318,12 +319,14 @@ async function init() {
 init();
 
 // ============================================================
-// Expose every views.js export on `window` so inline onclick= handlers can
-// call them. With <script type="module">, module-level identifiers are not
-// global by default — this assignment bridges the two worlds. Harmless to
-// expose helpers like _renderChannelCostModal that aren't used externally.
+// Expose every Utils + Views export on `window` so inline onclick= handlers
+// can call them. With <script type="module">, module-level identifiers are
+// NOT global by default — this assignment bridges the two worlds. Harmless
+// to expose helpers like _renderChannelCostModal that aren't used externally.
+// closeModal is the most-called offender — it lives in utils.js and is
+// referenced by ~30 onclick attributes across the app.
 // ============================================================
-Object.assign(window, Views);
+Object.assign(window, Utils, Views);
 </script>
 </body>
 </html>
