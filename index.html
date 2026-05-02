@@ -229,7 +229,7 @@ if (HWM_DEBUG) {
 // This helper centralizes the check so adding a new cost-related UI element
 // only requires one role gate to remember.
 function isHeadOfTA() {
-  return state.currentRole === 'head_ta' || state.currentMember?.role === 'admin';
+  return currentRole === 'head_ta' || state.currentMember?.role === 'admin';
 }
 
 // BU lookup: turn a buId into its display name. Returns 'Unknown' if missing.
@@ -282,7 +282,7 @@ function detectExecHireType(hmEmpId) {
 function getUser(id) {
   if (!id) return null;
   // 1. Real logged-in tenant member (auth.users.id)
-  if (state.realUsersByUuid[id]) return state.realUsersByUuid[id];
+  if (state.realUsersByUuid[id]) return realUsersByUuid[id];
   // 2. Employee from the master file (employees.id) — for supervisors/HMs
   //    who don't have a login. Normalize to the same shape as a user record.
   if (state.employeeMaps.byId[id]) {
@@ -359,13 +359,13 @@ function getUsersWithRoles(roleList) {
 // Falls back to legacy getUserName lookup for reqs created before Phase B.
 function getSupervisorName(r) {
   if (r.supervisorEmpId && state.employeeMaps.byId[r.supervisorEmpId]) {
-    return state.employeeMaps.byId[r.supervisorEmpId].name_en;
+    return employeeMaps.byId[r.supervisorEmpId].name_en;
   }
   return getUserName(r.immediateSupervisorId);
 }
 function getHiringManagerName(r) {
   if (r.hmEmpId && state.employeeMaps.byId[r.hmEmpId]) {
-    return state.employeeMaps.byId[r.hmEmpId].name_en;
+    return employeeMaps.byId[r.hmEmpId].name_en;
   }
   return getUserName(r.hiringManagerId);
 }
@@ -594,7 +594,7 @@ function switchRole(role) {
   state.currentRole = role;
   // Admin stays as themselves (state.currentUserId = their real auth UUID). The role
   // switch only changes which dashboard view renders; filtering queries like
-  // "requisitions assigned to me" use state.currentAuthUser.id, not state.currentUserId.
+  // "requisitions assigned to me" use currentAuthUser.id, not currentUserId.
   state.currentView = 'dashboard';
   state.selectedReqId = null;
   renderHeader();
@@ -618,7 +618,7 @@ function renderRequester() {
   if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderRequesterDetail(state.selectedReqId); return; }
   
   // ⭐ Filter by REAL requester id (Supabase auth UUID) for non-admins, so each
-  // Requester sees only the state.requisitions they actually submitted. Admins (i.e.
+  // Requester sees only the requisitions they actually submitted. Admins (i.e.
   // you while testing) keep the legacy behaviour so the seed data stays visible.
   const isAdmin = state.currentMember?.role === 'admin';
   const myReqs = isAdmin
@@ -779,7 +779,7 @@ function renderReqRow(r) {
     };
     const nonZero = Object.entries(counts).filter(([, n]) => n > 0);
     if (reqCands.length === 0) {
-      pipelineChips = `<div class="role-meta" style="margin-top: 0.25rem; color: var(--ink-4);">No state.candidates yet</div>`;
+      pipelineChips = `<div class="role-meta" style="margin-top: 0.25rem; color: var(--ink-4);">No candidates yet</div>`;
     } else {
       pipelineChips = `<div class="role-meta" style="margin-top: 0.25rem;">${nonZero.map(([k, n]) => `${labels[k]}: <strong>${n}</strong>`).join(' · ')}</div>`;
     }
@@ -1257,7 +1257,7 @@ async function viewJD(reqDbId) {
 // ⭐ Fetch a short-lived signed URL for a CV and open it in a new tab.
 // Role-gated: CVs contain PII and should only be viewable by recruiters,
 // hiring managers, HRBPs, head TA, and admins. Requesters and function
-// heads are NOT meant to pre-evaluate state.candidates.
+// heads are NOT meant to pre-evaluate candidates.
 async function viewCV(candDbId) {
   const allowedRoles = ['admin','recruiter','hiring_manager','hrbp','head_ta'];
   if (!allowedRoles.includes(state.currentMember?.role)) {
@@ -2182,7 +2182,7 @@ async function submitHold(reqId) {
 }
 
 // Enter edit mode for an existing requisition (typically after HRBP requested
-// revisions). Sets the state.editingReqId flag and navigates to the new-req form,
+// revisions). Sets the editingReqId flag and navigates to the new-req form,
 // which will pre-fill all fields from the existing req.
 function reviseReq(reqId) {
   const r = state.requisitions.find(x => x.id === reqId);
@@ -2603,7 +2603,7 @@ function renderHeadTA() {
   const allReqs = state.requisitions.slice().sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
   // Real recruiters from the tenant (from tenant_members + profiles).
   const recruiters = Object.values(state.realUsersByUuid).filter(u => u.role === 'recruiter');
-  // Richer per-recruiter performance metrics: active reqs, total state.candidates in pipeline,
+  // Richer per-recruiter performance metrics: active reqs, total candidates in pipeline,
   // interviews currently scheduled, offers out, and lifetime closed count.
   const workload = recruiters.map(rec => {
     const assigned = state.requisitions.filter(r => r.assignedRecruiters.includes(rec.id));
@@ -2690,10 +2690,10 @@ function renderHeadTA() {
       <div id="tab-all_reqs" class="tab-content">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">${t('sec_all_reqs_title') || 'All state.requisitions — end-to-end'}</div>
+            <div class="panel-title">${t('sec_all_reqs_title') || 'All requisitions — end-to-end'}</div>
             <span class="text-xs text-muted">${allReqs.length} ${t('metric_total_reqs') || 'total'}</span>
           </div>
-          ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No state.requisitions yet'}</div></div>` : `
+          ${allReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_reqs') || 'No requisitions yet'}</div></div>` : `
             <div class="panel-body no-pad">
               <table class="table">
                 <thead><tr>
@@ -2889,7 +2889,7 @@ function renderRecruiter() {
   if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderRecruiterDetail(state.selectedReqId); return; }
   
   // ⭐ Filter by real auth UUID for non-admins so each recruiter sees only their
-  // own assignments. Admins use state.currentUserId (their own auth UUID too, since
+  // own assignments. Admins use currentUserId (their own auth UUID too, since
   // the legacy demo-ID fallback was retired).
   const isAdmin = state.currentMember?.role === 'admin';
   const myId = isAdmin ? state.currentUserId : state.currentAuthUser?.id;
@@ -3911,7 +3911,7 @@ function renderJDLibrary() {
   // Build the role list. state.roleLibMaps.byId is the authoritative store of
   // role_library rows loaded from the DB (incl. standard_jd_path).
   // The rows have function_id (FK to departments) — we resolve the human-
-  // readable function name through state.deptMaps.
+  // readable function name through deptMaps.
   const tenantId = state.currentMember?.tenant_id || state.currentTenantId;
   const allRoles = Object.values(state.roleLibMaps.byId)
     .filter(r => !r.tenant_id || r.tenant_id === tenantId)
@@ -4938,7 +4938,7 @@ function renderExecAuthority() {
 
       <div class="card">
         <div style="padding: 0.75rem 1rem; border-bottom: 1px solid var(--line, #e5e7eb);">
-          <strong>Senior employee state.candidates</strong>
+          <strong>Senior employee candidates</strong>
           <div class="text-xs text-muted">Showing employees whose title suggests a senior role + everyone already flagged. Use Supabase directly to mark anyone else.</div>
         </div>
         <table class="data-table" style="width:100%;">
@@ -5100,7 +5100,7 @@ async function bootAfterAuth() {
     .eq('id', user.id)
     .single();
   if (myProfile) {
-    // Attach it to state.currentAuthUser for renderHeader to use
+    // Attach it to currentAuthUser for renderHeader to use
     state.currentAuthUser.profile = myProfile;
   }
 

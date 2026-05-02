@@ -19,7 +19,7 @@ function _doNavigate(view) { if (_navigateTo) _navigateTo(view); }
 // ---- MAPPERS: DB row (snake_case) <-> prototype object (camelCase) ----
 
 export function reqFromDb(row) {
-  // Resolve dept names from IDs using state.deptMaps
+  // Resolve dept names from IDs using deptMaps
   const fn = row.department_id     ? state.deptMaps.byId[row.department_id]?.name     : null;
   const sf = row.sub_function_id   ? state.deptMaps.byId[row.sub_function_id]?.name   : null;
   const un = row.unit_id           ? state.deptMaps.byId[row.unit_id]?.name           : null;
@@ -44,7 +44,7 @@ export function reqFromDb(row) {
     hrbpJustification: row.hrbp_justification,
     fhJustification: row.fh_justification,
     ceoJustification: row.ceo_justification,
-    // Real Supabase UUIDs — getUserName() resolves these via state.realUsersByUuid.
+    // Real Supabase UUIDs — getUserName() resolves these via realUsersByUuid.
     // If a UUID isn't in our tenant (shouldn't happen in production), getUser
     // returns null and display code shows "Unknown" gracefully.
     requesterId: row.requester_id || null,
@@ -87,7 +87,7 @@ export function reqFromDb(row) {
    Robustly look up a department/sub_function/unit ID from a name.
    Handles:
    - Empty/null input → returns null
-   - Missing state.deptMaps → logs warning, returns null
+   - Missing deptMaps → logs warning, returns null
    - Case-insensitive fallback if exact match fails
    - Whitespace trimming
    Logs to console with [ENTITY-RESOLVE] prefix when something goes wrong.
@@ -118,7 +118,7 @@ export function resolveDeptId(level, rawName) {
     const [keyLevel, keyName] = key.split(':');
     if (keyLevel === level && keyName.toLowerCase().trim() === target) {
       console.warn(`[ENTITY-RESOLVE] case/whitespace mismatch resolved: form sent "${name}" → matched DB "${keyName}"`);
-      return state.deptMaps.byName[key].id;
+      return deptMaps.byName[key].id;
     }
   }
 
@@ -130,7 +130,7 @@ export function resolveDeptId(level, rawName) {
 
 export function reqToDb(r) {
   // Map camelCase -> snake_case for INSERT/UPDATE
-  // Use the robust resolver (handles missing state.deptMaps, case mismatches, etc.)
+  // Use the robust resolver (handles missing deptMaps, case mismatches, etc.)
   const fnId = resolveDeptId('function',     r.function);
   const sfId = resolveDeptId('sub_function', r.subFunction);
   const unId = resolveDeptId('unit',         r.unit);
@@ -140,7 +140,7 @@ export function reqToDb(r) {
     ? (state.roleLibMaps.byLegacyId?.[r.roleId]?.id || state.roleLibMaps.byTitle?.[r.roleTitle]?.id || null)
     : null;
   // CRITICAL: preserve the real requester/supervisor/HM across updates.
-  // - For NEW reqs (no _dbId), default to state.currentAuthUser
+  // - For NEW reqs (no _dbId), default to currentAuthUser
   // - For EXISTING reqs, use the realRequesterId that was loaded from the DB
   // Never overwrite these fields on approve/reject/assign — the approver is NOT the requester.
   const isNewReq = !r._dbId;
@@ -162,7 +162,7 @@ export function reqToDb(r) {
     ? (r.hmEmpId || null)
     : (r.realHmEmpId || null);
   // Diagnostic: warn if a new req is being saved without a requester_id.
-  // Catches the auth-state bug where state.currentAuthUser was null at save time.
+  // Catches the auth-state bug where currentAuthUser was null at save time.
   if (isNewReq && !requesterUuid) {
     console.warn('[reqToDb] NEW req has no requester_id', {
       currentAuthUser_present: !!state.currentAuthUser,
@@ -420,7 +420,7 @@ export async function loadEverything() {
     (recsByReq[rec.requisition_id] = recsByReq[rec.requisition_id] || []).push(rec.user_id);
   });
 
-  // Transform state.requisitions
+  // Transform requisitions
   state.requisitions = (reqsRes.data || []).map(row => {
     // Recruiter assignments — only real tenant-member UUIDs are kept; unknown
     // UUIDs would indicate a stale row and are dropped rather than masked.
@@ -432,7 +432,7 @@ export async function loadEverything() {
     return reqFromDb(row);
   });
 
-  // Transform state.candidates — merge with applications
+  // Transform candidates — merge with applications
   const appsByCandReq = {};
   (appsRes.data || []).forEach(a => {
     const k = `${a.candidate_id}__${a.requisition_id}`;
@@ -700,7 +700,7 @@ export async function saveRequisitions(list) {
 /* ===== ENTITY ID FALLBACK FROM DB =====
    If reqToDb returned null IDs for fields that the form actually filled,
    query the departments table directly as a last resort. This handles the
-   case where state.deptMaps somehow didn't load but the database still has valid data.
+   case where deptMaps somehow didn't load but the database still has valid data.
    Mutates dbPayload in place. Safe no-op if everything already resolved.
 */
 export async function enrichEntityIdsFromDb(r, dbPayload) {
@@ -791,13 +791,13 @@ export async function persistReqChange(r, activityText, options = {}) {
 }
 
 // Targeted insert/update for ONE candidate + its application row. Mirror of
-// saveSingleRequisition but for state.candidates. Awaitable.
+// saveSingleRequisition but for candidates. Awaitable.
 export async function saveSingleCandidate(c) {
   const candPayload = {
     tenant_id: state.currentTenantId,
     full_name: c.name,
     // ⭐ Coerce empty strings to null. The DB has a unique constraint on (tenant, email);
-    // sending '' for two empty-email state.candidates would falsely trigger a duplicate. NULL is ignored.
+    // sending '' for two empty-email candidates would falsely trigger a duplicate. NULL is ignored.
     email: (c.email && String(c.email).trim()) ? String(c.email).trim() : null,
     phone: (c.phone && String(c.phone).trim()) ? String(c.phone).trim() : null,
     source: (c.source || '').toLowerCase().replace(/ /g, '_') || 'other',
