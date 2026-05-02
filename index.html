@@ -229,7 +229,7 @@ if (HWM_DEBUG) {
 // This helper centralizes the check so adding a new cost-related UI element
 // only requires one role gate to remember.
 function isHeadOfTA() {
-  return currentRole === 'head_ta' || state.currentMember?.role === 'admin';
+  return state.currentRole === 'head_ta' || state.currentMember?.role === 'admin';
 }
 
 // BU lookup: turn a buId into its display name. Returns 'Unknown' if missing.
@@ -282,7 +282,7 @@ function detectExecHireType(hmEmpId) {
 function getUser(id) {
   if (!id) return null;
   // 1. Real logged-in tenant member (auth.users.id)
-  if (state.realUsersByUuid[id]) return realUsersByUuid[id];
+  if (state.realUsersByUuid[id]) return state.realUsersByUuid[id];
   // 2. Employee from the master file (employees.id) — for supervisors/HMs
   //    who don't have a login. Normalize to the same shape as a user record.
   if (state.employeeMaps.byId[id]) {
@@ -359,13 +359,13 @@ function getUsersWithRoles(roleList) {
 // Falls back to legacy getUserName lookup for reqs created before Phase B.
 function getSupervisorName(r) {
   if (r.supervisorEmpId && state.employeeMaps.byId[r.supervisorEmpId]) {
-    return employeeMaps.byId[r.supervisorEmpId].name_en;
+    return state.employeeMaps.byId[r.supervisorEmpId].name_en;
   }
   return getUserName(r.immediateSupervisorId);
 }
 function getHiringManagerName(r) {
   if (r.hmEmpId && state.employeeMaps.byId[r.hmEmpId]) {
-    return employeeMaps.byId[r.hmEmpId].name_en;
+    return state.employeeMaps.byId[r.hmEmpId].name_en;
   }
   return getUserName(r.hiringManagerId);
 }

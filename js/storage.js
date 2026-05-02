@@ -118,7 +118,7 @@ export function resolveDeptId(level, rawName) {
     const [keyLevel, keyName] = key.split(':');
     if (keyLevel === level && keyName.toLowerCase().trim() === target) {
       console.warn(`[ENTITY-RESOLVE] case/whitespace mismatch resolved: form sent "${name}" → matched DB "${keyName}"`);
-      return deptMaps.byName[key].id;
+      return state.deptMaps.byName[key].id;
     }
   }
 
