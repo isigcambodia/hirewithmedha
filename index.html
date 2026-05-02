@@ -170,28 +170,18 @@
 </div>
 
 <script type="module">
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-// ============================================================
-// SUPABASE CONFIG
-// ============================================================
-const SUPABASE_URL  = 'https://uwaamlyvvzuhoznlrbhz.supabase.co';
-const SUPABASE_ANON = 'sb_publishable_ioqn20WRljfy8s0-3p6ZcQ_DTic4F5V';
-const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
-
+import { sb } from './js/config.js';
 import {
   HWM_BUILD, HWM_DEBUG, dbg, esc, escJs,
   generateReqId, generateCandidateId,
 } from './js/helpers.js';
-
-dbg('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
-
-// Session/state lookups now live in js/state.js (imported below as `state`).
 import { state } from './js/state.js';
 import {
   ORG_STRUCTURE, EXISTING_ROLES, ROLES, RESOURCE_TYPES, STATUS_CONFIG, ICONS,
 } from './js/constants.js';
 import { TRANSLATIONS, STATUS_LABELS_KM, t, getStatusLabel } from './js/i18n.js';
+
+dbg('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
 
 // Expose things the inline onclick handlers need
 window.sb = sb;
