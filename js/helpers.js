@@ -48,27 +48,3 @@ function _idSuffix(len = 6) {
 
 export function generateReqId() { return `REQ-2026-${_idSuffix(6)}`; }
 export function generateCandidateId() { return `CAN-${_idSuffix(6)}`; }
-
-// ============================================================
-// GRADE DISPLAY
-// ============================================================
-// Grades are stored in the DB as plain numeric strings ("1" through "15";
-// the CHECK constraint enforces ^\d+$). The UI displays them as Unicode
-// circled digits — the circle alone gives enough visual context, so no
-// "G" prefix anywhere. Mapping covers 1–20 to absorb any future grade
-// additions without falling back to the parens form.
-export const GRADE_ICONS = {
-  '1':'①', '2':'②', '3':'③', '4':'④', '5':'⑤',
-  '6':'⑥', '7':'⑦', '8':'⑧', '9':'⑨', '10':'⑩',
-  '11':'⑪','12':'⑫','13':'⑬','14':'⑭','15':'⑮',
-  '16':'⑯','17':'⑰','18':'⑱','19':'⑲','20':'⑳',
-};
-
-// gradeIcon: turn a grade string/number into its circled-digit display.
-// Tolerates a leading "G" so any legacy in-memory data still renders correctly.
-// Unknown values fall back to the bare number (no "G", no parens).
-export function gradeIcon(grade) {
-  if (grade == null || grade === '') return '';
-  const key = String(grade).replace(/^G/i, '');
-  return GRADE_ICONS[key] || key;
-}
