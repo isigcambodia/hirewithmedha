@@ -14,14 +14,14 @@ export const ORG_STRUCTURE = {
 };
 
 export const EXISTING_ROLES = [
-  { id: 'R001', title: 'Senior Sales Manager', function: 'Sales', grade: 'G8' },
-  { id: 'R002', title: 'Sales Executive', function: 'Sales', grade: 'G5' },
-  { id: 'R003', title: 'Software Engineer', function: 'Engineering', grade: 'G6' },
-  { id: 'R004', title: 'DevOps Engineer', function: 'Engineering', grade: 'G7' },
-  { id: 'R005', title: 'Operations Manager', function: 'Operations', grade: 'G7' },
-  { id: 'R006', title: 'Accountant', function: 'Finance', grade: 'G5' },
-  { id: 'R007', title: 'Finance Manager', function: 'Finance', grade: 'G8' },
-  { id: 'R008', title: 'HR Specialist', function: 'HR', grade: 'G5' }
+  { id: 'R001', title: 'Senior Sales Manager', function: 'Sales', grade: '8' },
+  { id: 'R002', title: 'Sales Executive', function: 'Sales', grade: '5' },
+  { id: 'R003', title: 'Software Engineer', function: 'Engineering', grade: '6' },
+  { id: 'R004', title: 'DevOps Engineer', function: 'Engineering', grade: '7' },
+  { id: 'R005', title: 'Operations Manager', function: 'Operations', grade: '7' },
+  { id: 'R006', title: 'Accountant', function: 'Finance', grade: '5' },
+  { id: 'R007', title: 'Finance Manager', function: 'Finance', grade: '8' },
+  { id: 'R008', title: 'HR Specialist', function: 'HR', grade: '5' }
 ];
 
 // ROLES defines the role categories used for dashboards and the admin

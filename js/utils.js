@@ -2,7 +2,7 @@
 // UTILS — small UI/data helpers shared across role views
 // ============================================================
 import { state } from './state.js';
-import { esc, escJs } from './helpers.js';
+import { esc, escJs, gradeIcon } from './helpers.js';
 import { ICONS, RESOURCE_TYPES, STATUS_CONFIG } from './constants.js';
 import { t, getStatusLabel } from './i18n.js';
 
@@ -166,7 +166,9 @@ export function getSLATarget(status) {
   return { hrbp_review: 2, fh_approval: 2, ceo_approval: 5, ta_assignment: 2 }[status] || 0;
 }
 export function calculateTargetFillDate(grade, approvalDate) {
-  const g = parseInt(grade.replace('G',''));
+  // DB now stores grade as a plain numeric string ("1".."15"). Tolerate a
+  // legacy "G" prefix in case any in-memory object still carries one.
+  const g = parseInt(String(grade || '').replace(/^G/i, ''), 10);
   let days = 30;
   if (g >= 6 && g <= 7) days = 45;
   else if (g >= 8) days = 60;
@@ -288,7 +290,7 @@ export function renderReqRow(r) {
       </td>
       <td>
         <div class="role-title">${esc(r.roleTitle)}</div>
-        <div class="role-meta">${esc([getBuName(r.buId), r.function, r.grade].filter(Boolean).join(" · "))}</div>
+        <div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · "))}${r.grade ? ' · ' + gradeIcon(r.grade) : ''}</div>
         ${pipelineChips}
       </td>
       <td>${statusBadge(r.status)}</td>
