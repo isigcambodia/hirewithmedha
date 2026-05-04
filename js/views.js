@@ -2937,7 +2937,7 @@ function addCandidate(reqId) {
     </div>
     <div class="form-grid-2">
       <div class="form-group"><label class="required">${t('lbl_phone')}</label><input type="text" id="candPhone" placeholder="+855 12 345 678"></div>
-      <div class="form-group"><label class="required">${t('lbl_source')}</label><select id="candSource"><option>LinkedIn</option><option>Referral</option><option>Job Board</option><option>Direct Apply</option><option>Other</option></select></div>
+      <div class="form-group"><label class="required">${t('lbl_source')}</label><select id="candSource">${SOURCE_OPTIONS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
     </div>
     <div class="form-group"><label class="required">${t('lbl_applicant_cv') || 'Applicant CV'}</label><input type="file" id="candCV" accept=".pdf"></div>
 
