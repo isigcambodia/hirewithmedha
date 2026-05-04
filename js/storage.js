@@ -470,6 +470,15 @@ export async function loadEverything() {
     state.candidates.push(c);
   });
 
+  // Diagnostic: detect orphan candidates (rows in `candidates` with no matching
+  // `applications` row). They wouldn't appear in any pipeline because the loader
+  // iterates applications. If this fires, there's a save-side bug we should chase.
+  const linkedCandIds = new Set((appsRes.data || []).map(a => a.candidate_id));
+  const orphanCount = (candsRes.data || []).filter(c => !linkedCandIds.has(c.id)).length;
+  if (orphanCount > 0) {
+    console.warn(`[hwm] ${orphanCount} candidate(s) in DB have no matching application row — they won't appear in any pipeline. Investigate save path.`);
+  }
+
   // Transform activity log
   state.activities = (actRes.data || []).map(activityFromDb);
 
@@ -827,9 +836,14 @@ export async function saveSingleCandidate(c) {
     c._dbId = data.id;
   }
 
-  // Application row (one-to-one per candidate+req pair)
+  // Application row (one-to-one per candidate+req pair). Without it the loader
+  // can't link the candidate back to a requisition on next login, so the
+  // candidate appears to "vanish". If the req lookup fails, throw — never
+  // pretend success.
   const req = state.requisitions.find(r => r.id === c.reqId);
-  if (!req || !req._dbId) { toast('Saved'); return c; }
+  if (!req || !req._dbId) {
+    throw new Error(`Cannot link candidate to requisition: reqId=${c.reqId} not found in loaded requisitions. Refresh and retry.`);
+  }
   const appPayload = {
     tenant_id: state.currentTenantId,
     requisition_id: req._dbId,
