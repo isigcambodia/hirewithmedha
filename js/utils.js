@@ -2,7 +2,7 @@
 // UTILS — small UI/data helpers shared across role views
 // ============================================================
 import { state } from './state.js';
-import { esc, escJs, gradeIcon } from './helpers.js';
+import { esc, escJs } from './helpers.js';
 import { ICONS, RESOURCE_TYPES, STATUS_CONFIG } from './constants.js';
 import { t, getStatusLabel } from './i18n.js';
 
@@ -290,7 +290,7 @@ export function renderReqRow(r) {
       </td>
       <td>
         <div class="role-title">${esc(r.roleTitle)}</div>
-        <div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · "))}${r.grade ? ' · ' + gradeIcon(r.grade) : ''}</div>
+        <div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · "))}${r.grade ? ' · ' + r.grade : ''}</div>
         ${pipelineChips}
       </td>
       <td>${statusBadge(r.status)}</td>

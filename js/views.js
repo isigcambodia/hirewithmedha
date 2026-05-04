@@ -9,7 +9,7 @@ import { sb } from './config.js';
 import { state } from './state.js';
 import {
   HWM_BUILD, HWM_DEBUG, dbg, esc, escJs,
-  generateReqId, generateCandidateId, gradeIcon,
+  generateReqId, generateCandidateId,
 } from './helpers.js';
 import {
   ORG_STRUCTURE, EXISTING_ROLES, ROLES, RESOURCE_TYPES, STATUS_CONFIG, ICONS,
@@ -263,7 +263,7 @@ function renderRequester() {
               <tbody>${onHoldOrCancelled.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${statusBadge(r.status)}</td>
                   <td style="text-align: right;">
                     ${r.status === 'on_hold' ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); resumeReq('${escJs(r.id)}')">${ICONS.check} ${t('btn_resume')}</button>` : ''}
@@ -287,7 +287,7 @@ function renderRequester() {
               <tbody>${rejected.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${statusBadge(r.status)}</td>
                   <td><span class="text-sm text-muted">${r.rejectionReason ? (r.rejectionReason.length > 120 ? r.rejectionReason.substring(0, 120) + '…' : r.rejectionReason) : '—'}</span></td>
                 </tr>
@@ -306,7 +306,7 @@ function renderRequester() {
               <tbody>${closed.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${statusBadge(r.status)}</td>
                 </tr>
               `).join('')}</tbody>
@@ -405,7 +405,7 @@ function renderNewReqForm() {
             <label class="required">${t('th_role')}</label>
             <select id="roleSelect" onchange="toggleNewRole()">
               <option value="">${t('ph_select_role')}</option>
-              ${[...EXISTING_ROLES].sort((a,b) => a.title.localeCompare(b.title) || (parseInt(a.grade, 10) || 0) - (parseInt(b.grade, 10) || 0)).map(r => `<option value="${r.id}">${r.title} — ${r.function} ${gradeIcon(r.grade)}</option>`).join('')}
+              ${[...EXISTING_ROLES].sort((a,b) => a.title.localeCompare(b.title) || (parseInt(a.grade, 10) || 0) - (parseInt(b.grade, 10) || 0)).map(r => `<option value="${r.id}">${r.title} — ${r.function} ${r.grade}</option>`).join('')}
               <option value="NEW">${t('ph_new_role')}</option>
             </select>
           </div>
@@ -420,7 +420,7 @@ function renderNewReqForm() {
                 <label class="required">${t('lbl_proposed_grade')}</label>
                 <select id="newRoleGrade">
                   <option value="">${t('ph_select_grade')}</option>
-                  ${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}">${gradeIcon(g)}</option>`).join('')}
+                  ${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}">${g}</option>`).join('')}
                 </select>
               </div>
             </div>
@@ -496,11 +496,11 @@ function renderNewReqForm() {
           <div class="form-section-title">${t('sec_reporting')}</div>
           
           <!-- Shared datalist for both Supervisor and Hiring Manager autocomplete.
-               Format: "Name — Position ⑧" (circled grade glyph). Actual lookup
+               Format: "Name — Position 8" (plain numeric grade). Actual lookup
                is by exact label match when submitted. -->
           <datalist id="employeeOptions">
             ${state.employeeMaps.list.map(e => {
-              const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + gradeIcon(e.grade) : ''}`;
+              const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
               return `<option value="${label.replace(/"/g, '&quot;')}"></option>`;
             }).join('')}
           </datalist>
@@ -630,7 +630,7 @@ function prefillEditForm(reqId) {
     // Try to find the matching employee for a richer label; fall back to raw name
     const emp = state.employeeMaps.list.find(e => e.id === r.immediateSupervisorId) ||
                 state.employeeMaps.list.find(e => e.name_en === r.immediateSupervisor);
-    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + gradeIcon(emp.grade) : ''}` : r.immediateSupervisor;
+    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + emp.grade : ''}` : r.immediateSupervisor;
   }
   // Same HM logic — if hiringManager is empty/same as supervisor, mark "yes"; else "no" + populate
   const sameHMYes = document.querySelector(`input[name="sameHM"][value="yes"]`);
@@ -643,7 +643,7 @@ function prefillEditForm(reqId) {
     if (hmEl) {
       const emp = state.employeeMaps.list.find(e => e.id === r.hiringManagerId) ||
                   state.employeeMaps.list.find(e => e.name_en === r.hiringManager);
-      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + gradeIcon(emp.grade) : ''}` : r.hiringManager;
+      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + emp.grade : ''}` : r.hiringManager;
     }
   } else {
     if (sameHMYes) sameHMYes.checked = true;
@@ -841,9 +841,9 @@ async function submitNewReq() {
   if (sameHM === 'no' && !hmTyped) { alert('Select hiring manager'); return; }
 
   // ⭐ Convert the typed label back to an employee record. Labels are
-  // "Name — Position ⑧" (circled grade glyph) — we match by exact label.
+  // "Name — Position 8" (plain numeric grade) — we match by exact label.
   // If no match is found, the user typed a freeform value — reject.
-  const labelFor = e => `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + gradeIcon(e.grade) : ''}`;
+  const labelFor = e => `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
   const supEmp = state.employeeMaps.list.find(e => labelFor(e) === supTyped);
   if (!supEmp) {
     alert('Immediate supervisor must be selected from the list. Typed value "' + supTyped + '" was not found.');
@@ -1171,7 +1171,7 @@ function renderRequesterDetail(reqId) {
             <div class="panel-header"><div class="panel-title">${t('sec_req_details')}</div></div>
             <div class="panel-body">
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${gradeIcon(r.grade)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_bu') || 'Business Unit'}</span><span class="detail-value">${getBuName(r.buId) || '—'}</span></div>
               ${r.raisedOnBehalfOfEmpId ? (() => {
                 const exec = (state.employeeMaps.list || []).find(e => e.id === r.raisedOnBehalfOfEmpId);
@@ -1392,7 +1392,7 @@ function renderHRBP() {
               <tbody>${pending.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${getRequesterDisplay(r)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(r.submittedAt)}</td>
@@ -1486,7 +1486,7 @@ function renderHRBPDetail(reqId) {
               <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${gradeIcon(r.grade)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_replacement')} / ${t('lbl_planned')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')} / ${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getSupervisorName(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
@@ -1808,7 +1808,7 @@ function renderFunctionHead() {
             <tbody>${pending.map(r => `
               <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                 <td><span class="req-id">${esc(r.id)}</span></td>
-                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                 <td>${getRequesterDisplay(r)}</td>
                 <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
@@ -1865,7 +1865,7 @@ function renderFHDetail(reqId) {
               <div class="detail-row"><span class="detail-label">${t('th_submitted')}</span><span class="detail-value">${formatDate(r.submittedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_hrbp_approved')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${gradeIcon(r.grade)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_replacement')} / ${t('lbl_planned')}</span><span class="detail-value">${r.isReplacement ? t('lbl_yes') : t('lbl_no')} / ${r.isPlanned ? t('lbl_yes') : t('lbl_no')}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_imm_sup')}</span><span class="detail-value">${getSupervisorName(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
@@ -1980,7 +1980,7 @@ function renderCEO() {
             <tbody>${pending.map(r => `
               <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                 <td><span class="req-id">${esc(r.id)}</span> <span class="badge badge-ceo" style="margin-left: 0.3rem;">${t('st_unplanned')}</span></td>
-                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                 <td>${getRequesterDisplay(r)}</td>
                 <td>${formatDate(r.hrbpApprovedAt)}</td>
                 <td>${formatDate(r.fhApprovedAt)}</td>
@@ -2037,7 +2037,7 @@ function renderCEODetail(reqId) {
               <div class="detail-row"><span class="detail-label">${t('txt_approval_sent')}</span><span class="detail-value">${formatDate(r.hrbpApprovedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('txt_fh_approved')}</span><span class="detail-value">${formatDate(r.fhApprovedAt)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)} ${r.isNewRole ? `<span class="badge badge-info" style="margin-left: 0.4rem;">${t('st_new_role')}</span>` : ''}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${gradeIcon(r.grade)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('txt_type')}</span><span class="detail-value" style="color: var(--warning); font-weight: 600;">${t('txt_unplanned_noyes')}</span></div>
             </div>
           </div>
@@ -2166,7 +2166,7 @@ function renderHeadTA() {
               <tbody>${pending.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${getRequesterDisplay(r)}</td>
                   <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_approved')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
                   <td>${formatDate(getStageDate(r))}</td>
@@ -2217,7 +2217,7 @@ function renderHeadTA() {
                 <tbody>${allReqs.map(r => `
                   <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                     <td><span class="req-id">${esc(r.id)}</span></td>
-                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${r.function || ''}${r.grade ? ' · ' + gradeIcon(r.grade) : ''}</div></td>
+                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${r.function || ''}${r.grade ? ' · ' + r.grade : ''}</div></td>
                     <td>${getRequesterDisplay(r)}</td>
                     <td>${statusBadge(r.status)}</td>
                     <td>${esc(getCurrentOwner(r))}</td>
@@ -2296,7 +2296,7 @@ function renderTADetail(reqId) {
             <div class="panel-header"><div class="panel-title">${t('sec_summary')}</div></div>
             <div class="panel-body">
               <div class="detail-row"><span class="detail-label">${t('th_role')}</span><span class="detail-value">${esc(r.roleTitle)}</span></div>
-              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${gradeIcon(r.grade)}</span></div>
+              <div class="detail-row"><span class="detail-label">${t('th_grade')}</span><span class="detail-value">${r.grade}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_requester')}</span><span class="detail-value">${getRequesterDisplay(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('lbl_hm')}</span><span class="detail-value">${getHiringManagerName(r)}</span></div>
               <div class="detail-row"><span class="detail-label">${t('th_path')}</span><span class="detail-value">${r.approvalPath === 'ceo_required' ? t('st_ceo_approved') : t('st_standard')}</span></div>
@@ -2439,7 +2439,7 @@ function renderRecruiter() {
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
                   <td><div class="role-title">${esc(r.roleTitle)}</div></td>
-                  <td>${gradeIcon(r.grade)}</td>
+                  <td>${r.grade}</td>
                   <td>${formatDate(r.targetFillDate)}</td>
                   <td><span class="${slaClass}" style="font-weight: 500;">${daysLeft}${t('txt_days').charAt(0)}</span></td>
                   <td>${cands.length} ${t('metric_candidates').toLowerCase()}</td>
@@ -2462,7 +2462,7 @@ function renderRecruiter() {
               <tbody>${heldReqs.map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
-                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                  <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${getRequesterDisplay(r)}</td>
                   <td>${statusBadge(r.status)}</td>
                 </tr>
@@ -2487,7 +2487,7 @@ function renderRecruiter() {
                 .map(r => `
                   <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                     <td><span class="req-id">${esc(r.id)}</span></td>
-                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + gradeIcon(r.grade) : ""))}</div></td>
+                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                     <td>${getRequesterDisplay(r)}</td>
                     <td>${formatDate(r.closedAt || r.updatedAt)}</td>
                   </tr>
@@ -2532,7 +2532,7 @@ function renderRecruiterDetail(reqId) {
         <h1>${esc(r.roleTitle)}</h1>
         <div class="detail-meta">
           ${statusBadge(r.status)}
-          <span class="badge badge-neutral">${gradeIcon(r.grade)}</span>
+          <span class="badge badge-neutral">${r.grade}</span>
           <span class="text-xs text-muted">${esc([getBuName(r.buId), r.function, r.subFunction, r.unit].filter(Boolean).join(" · "))}</span>
         </div>
       </div>
@@ -2680,7 +2680,7 @@ function renderCandCard(c, isOnHold = false) {
       <div class="cand-name">${esc(c.name)}</div>
       <div class="cand-meta">${c.source} · <span class="mono">${daysSince(c.stageChangedAt)}d</span> in stage</div>
       ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
-      ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${gradeIcon(c.offer.grade)}</div>` : ''}
+      ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
       ${cvButton}
       <div class="cand-actions">${actions}</div>
     </div>
@@ -3345,7 +3345,7 @@ function prepareOffer(candId) {
     <p class="modal-desc"><strong>${esc(c.name)}</strong> — ${esc(r.roleTitle)}</p>
     <div class="form-grid-2">
       <div class="form-group"><label class="required">${t('lbl_salary')}</label><input type="number" id="offSal" value="${e.salary || ''}"></div>
-      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g ? 'selected' : ''}>${gradeIcon(g)}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
     </div>
     <div class="form-group"><label class="required">${t('lbl_start_date')}</label><input type="date" id="offStart" value="${e.startDate || ''}"></div>
     <div class="form-group"><label>${t('lbl_benefits')}</label><textarea id="offBen" rows="3">${e.benefits || ''}</textarea></div>
@@ -3513,7 +3513,7 @@ function renderJDLibrary() {
                   <tr>
                     <td><span class="text-xs text-muted">${r._functionName || '—'}</span></td>
                     <td><div class="role-title">${r.title || '—'}</div>${r._subFunctionName ? `<div class="role-meta">${r._subFunctionName}</div>` : ''}</td>
-                    <td>${r.grade ? gradeIcon(r.grade) : '—'}</td>
+                    <td>${r.grade ? r.grade : '—'}</td>
                     <td>${has ? `<span class="badge badge-success">✓ ${t('st_has_jd') || 'Has JD'}</span>` : `<span class="badge badge-warning">${t('st_no_jd') || 'No JD'}</span>`}</td>
                     <td><span class="text-xs text-muted">${has ? (r.standard_jd_filename || '—') : '—'}</span></td>
                     <td style="text-align: right; white-space: nowrap;">
