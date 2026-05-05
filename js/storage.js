@@ -1087,6 +1087,45 @@ export function toast(msg, isErr) {
 
 
 
+// ---- v37 step 3: insert a new employee row (Add Employee modal) ---------
+// Caller is responsible for passing a fully-resolved payload — function_id,
+// department_id, business_unit_id are already uuids; line_manager_code is a
+// text employee_code; status defaults to 'Active'. Returns the inserted row
+// (with the new uuid) on success; throws otherwise.
+export async function saveEmployee(payload) {
+  const row = {
+    tenant_id: state.currentTenantId,
+    business_unit_id: payload.business_unit_id,
+    employee_code: payload.employee_code,
+    status: payload.status || 'Active',
+    name_en: payload.name_en,
+    name_kh: payload.name_kh || null,
+    company_email: payload.company_email || null,
+    function_id: payload.function_id || null,
+    department_id: payload.department_id || null,
+    section: payload.section || null,
+    position_title: payload.position_title || null,
+    grade: payload.grade || null,
+    company_grade: payload.company_grade || null,
+    contract_type: payload.contract_type || null,
+    gender: payload.gender || null,
+    dob: payload.dob || null,
+    work_location: payload.work_location || null,
+    joined_at: payload.joined_at || null,
+    group_join_date: payload.group_join_date || null,
+    line_manager_code: payload.line_manager_code || null,
+    company: payload.company || null,
+  };
+  const { data, error } = await sb.from('employees').insert(row).select().single();
+  if (error) throw error;
+  // Refresh the in-memory map so the new row is immediately visible without a reload.
+  state.employeeMaps.byId[data.id] = data;
+  if (data.employee_code) state.employeeMaps.byCode[data.employee_code] = data;
+  state.employeeMaps.list.push(data);
+  return data;
+}
+
+
 export function logActivity(reqId, text) {
   state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'] });
   saveData('activities', state.activities);

@@ -21,7 +21,7 @@ import {
   channelCostFromDb, channelCostToDb, saveChannelCostRecord, deleteChannelCostRecord,
   saveData, saveRequisitions, enrichEntityIdsFromDb, saveSingleRequisition,
   persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
-  saveCandidates, saveActivitiesTail, loadData, toast, logActivity,
+  saveCandidates, saveActivitiesTail, loadData, toast, logActivity, saveEmployee,
 } from './storage.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
@@ -4746,7 +4746,7 @@ function renderEmployees() {
         </div>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
           <button class="btn btn-secondary" onclick="alert('${esc(t('emp_bulk_soon') || 'Bulk upload — coming soon')}')">${t('emp_btn_bulk') || 'Bulk upload'}</button>
-          <button class="btn btn-primary" disabled title="${esc(t('emp_add_soon') || 'Add Employee — coming in step 3')}">${ICONS.plus} ${t('emp_btn_add') || 'Add Employee'}</button>
+          <button class="btn btn-primary" onclick="openAddEmployeeModal()">${ICONS.plus} ${t('emp_btn_add') || 'Add Employee'}</button>
         </div>
       </div>
       ${scopeContext}
@@ -4791,6 +4791,210 @@ function onEmployeesSearch(q) {
 function onEmployeesBuFilterChange(v) {
   state.employeesBuFilter = v;
   renderEmployees();
+}
+
+// ---- Add Employee modal --------------------------------------------------
+// Persona-aware BU field:
+//   * userBuIds.length === 1 → locked display, BU pre-selected
+//   * userBuIds.length  >  1 → dropdown limited to user's accessible BUs
+// Uses the existing openModal() / closeModal() helpers from utils.js.
+function openAddEmployeeModal() {
+  const userBuSet = new Set(state.userBuIds || []);
+  const accessibleBus = (state.businessUnits || []).filter(b => userBuSet.has(b.id));
+  const singleBu = accessibleBus.length === 1;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Function dropdown — top-level departments
+  const functions = (Object.values(state.deptMaps?.byId || {}) || [])
+    .filter(d => d.level === 'function')
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const departments = (Object.values(state.deptMaps?.byId || {}) || [])
+    .filter(d => d.level === 'sub_function')
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  // Supervisor (Reports to) picker — active employees within the user's BU scope.
+  // Datalist over name + employee_code so HR can type either; submit value is the code.
+  const supChoices = (state.employeeMaps.list || [])
+    .filter(e => e.status === 'Active' && e.business_unit_id && userBuSet.has(e.business_unit_id))
+    .sort((a, b) => (a.name_en || '').localeCompare(b.name_en || ''));
+
+  const buFieldHtml = singleBu
+    ? `<input type="hidden" id="empBuId" value="${esc(accessibleBus[0].id)}">
+       <div class="text-sm" style="padding: 0.55rem 0.75rem; background: var(--paper-2, #f1ebe0); border: 1px solid var(--rule); border-radius: 0.4rem;">
+         <strong>${esc(accessibleBus[0].name)}</strong>
+         <span class="text-xs text-muted" style="margin-left: 0.5rem;">${t('emp_field_bu_locked') || 'scoped to your BU'}</span>
+       </div>`
+    : `<select id="empBuId" required>
+         <option value="">${t('emp_ph_select_bu') || '— select a BU —'}</option>
+         ${accessibleBus.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}
+       </select>`;
+
+  openModal(`
+    <div class="modal-header">
+      <h2>${t('emp_modal_add_title') || 'Add Employee'}</h2>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <p class="modal-desc">${t('emp_modal_add_desc') || 'For backfills, transfers, or anyone hired outside the platform.'}</p>
+
+    <div class="form-group">
+      <label class="required">${t('emp_field_bu') || 'Business Unit'}</label>
+      ${buFieldHtml}
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">${t('emp_field_emp_code') || 'Employee Code'}</label>
+        <input type="text" id="empCode" placeholder="e.g. 107XXX">
+      </div>
+      <div class="form-group">
+        <label class="required">${t('emp_field_name_en') || 'Name (EN)'}</label>
+        <input type="text" id="empNameEn" placeholder="e.g. Sok Dara">
+      </div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label>${t('emp_field_name_kh') || 'Name (KM)'}</label>
+        <input type="text" id="empNameKh" placeholder="ឧ. សុក ដារ៉ា" class="km">
+      </div>
+      <div class="form-group">
+        <label>${t('emp_field_email') || 'Email'} <span class="text-xs text-muted">${t('emp_field_email_hint') || '(only if they need to log in)'}</span></label>
+        <input type="email" id="empEmail" placeholder="dara.sok@isisteel.com.kh">
+      </div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">${t('emp_field_function') || 'Function'}</label>
+        <select id="empFunctionId">
+          <option value="">${t('emp_ph_select_function') || '— select —'}</option>
+          ${functions.map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>${t('emp_field_department') || 'Department'}</label>
+        <select id="empDepartmentId">
+          <option value="">${t('emp_ph_select_department') || '— select —'}</option>
+          ${departments.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label>${t('emp_field_section') || 'Section'}</label>
+        <input type="text" id="empSection" placeholder="${t('emp_field_section_ph') || 'e.g. Line 50A2'}">
+      </div>
+      <div class="form-group">
+        <label class="required">${t('emp_field_position') || 'Position'}</label>
+        <input type="text" id="empPosition" placeholder="${t('emp_field_position_ph') || 'e.g. Sales Executive'}">
+      </div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label>${t('emp_field_grade') || 'Incumbent Grade'}</label>
+        <input type="text" id="empGrade" placeholder="1–15" pattern="^\\d+$" inputmode="numeric">
+      </div>
+      <div class="form-group">
+        <label>${t('emp_field_company_grade') || 'Company Grade'}</label>
+        <input type="text" id="empCompanyGrade" placeholder="1–15" pattern="^\\d+$" inputmode="numeric">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>${t('emp_field_supervisor') || 'Reports to'}</label>
+      <input type="text" id="empSupervisor" list="empSupervisorList" placeholder="${t('emp_field_supervisor_ph') || 'Type a name or employee code'}">
+      <datalist id="empSupervisorList">
+        ${supChoices.map(e => `<option value="${esc(e.employee_code || '')}">${esc(e.name_en || '')} — ${esc(e.position_title || '')}</option>`).join('')}
+      </datalist>
+      <div class="text-xs text-muted">${t('emp_field_supervisor_hint') || 'Stored as their Employee Code; suggestions limited to active staff in your BU.'}</div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">${t('emp_field_hire_date') || 'Hire Date'}</label>
+        <input type="date" id="empHireDate" value="${today}">
+      </div>
+      <div class="form-group">
+        <label>${t('emp_field_contract_type') || 'Contract Type'}</label>
+        <input type="text" id="empContractType" placeholder="${t('emp_field_contract_ph') || 'e.g. Permanent, FDC, UDC'}">
+      </div>
+    </div>
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label>${t('emp_field_gender') || 'Gender'}</label>
+        <select id="empGender">
+          <option value="">${t('emp_ph_not_specified') || '— Not specified —'}</option>
+          <option value="M">${t('emp_gender_m') || 'Male'}</option>
+          <option value="F">${t('emp_gender_f') || 'Female'}</option>
+          <option value="Other">${t('emp_gender_other') || 'Other'}</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>${t('emp_field_dob') || 'Date of Birth'}</label>
+        <input type="date" id="empDob">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>${t('emp_field_work_location') || 'Work Location'}</label>
+      <input type="text" id="empWorkLocation" placeholder="${t('emp_field_loc_ph') || 'e.g. Phnom Penh, Sihanoukville'}">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel') || 'Cancel'}</button>
+      <button class="btn btn-primary" onclick="submitAddEmployee()">${ICONS.plus} ${t('emp_btn_add') || 'Add Employee'}</button>
+    </div>
+  `);
+}
+
+async function submitAddEmployee() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const business_unit_id = v('empBuId');
+  const employee_code    = v('empCode');
+  const name_en          = v('empNameEn');
+  const name_kh          = v('empNameKh');
+  const company_email    = v('empEmail');
+  const function_id      = v('empFunctionId');
+  const department_id    = v('empDepartmentId');
+  const section          = v('empSection');
+  const position_title   = v('empPosition');
+  const grade            = v('empGrade');
+  const company_grade    = v('empCompanyGrade');
+  const line_manager_code = v('empSupervisor');
+  const joined_at        = v('empHireDate');
+  const contract_type    = v('empContractType');
+  const gender           = v('empGender');
+  const dob              = v('empDob');
+  const work_location    = v('empWorkLocation');
+
+  // Required-field validation surfaced as a single toast (matches existing pattern).
+  if (!business_unit_id) { toast(t('emp_err_bu_required') || 'Select a Business Unit', true); return; }
+  if (!employee_code)    { toast(t('emp_err_code_required') || 'Employee Code is required', true); return; }
+  if (!name_en)          { toast(t('emp_err_name_required') || 'Name (EN) is required', true); return; }
+  if (!function_id)      { toast(t('emp_err_function_required') || 'Function is required', true); return; }
+  if (!position_title)   { toast(t('emp_err_position_required') || 'Position is required', true); return; }
+  if (!joined_at)        { toast(t('emp_err_hire_date_required') || 'Hire Date is required', true); return; }
+  if (grade && !/^\d+$/.test(grade))                 { toast(t('emp_err_grade_numeric') || 'Grade must be a plain number', true); return; }
+  if (company_grade && !/^\d+$/.test(company_grade)) { toast(t('emp_err_grade_numeric') || 'Grade must be a plain number', true); return; }
+
+  try {
+    await saveEmployee({
+      business_unit_id, employee_code, name_en, name_kh, company_email,
+      function_id, department_id, section, position_title,
+      grade, company_grade, line_manager_code,
+      joined_at, contract_type, gender, dob, work_location,
+    });
+    toast(t('emp_toast_added') || 'Employee added');
+    closeModal();
+    renderEmployees();
+  } catch (e) {
+    console.error('saveEmployee failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
 }
 
 function setView(view) {
@@ -4913,6 +5117,8 @@ export {
   setEmployeesTab,
   onEmployeesSearch,
   onEmployeesBuFilterChange,
+  openAddEmployeeModal,
+  submitAddEmployee,
   setOnboardingTab,
   setView,
   statusChip,
