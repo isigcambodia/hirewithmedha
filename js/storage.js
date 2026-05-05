@@ -1125,6 +1125,83 @@ export async function saveEmployee(payload) {
   return data;
 }
 
+// ---- v37 step 4: deactivate an employee with open-item reassignment ------
+// Atomicity is best-effort: reassignments run first; if any fail we throw
+// before flipping the status, so the employee remains Active and the items
+// stay where they were. If the final status update fails after successful
+// reassignments, the items are already moved (recoverable on retry).
+//
+// payload: {
+//   inactive_at:      'YYYY-MM-DD' (required)
+//   inactive_reason:  enum (required)
+//   inactive_notes:   text (optional)
+//   reassign_recruiter_to_user_id?: uuid    // applied to all active reqs where leaver was recruiter
+//   reassign_requester_to_user_id?: uuid    // applied to all active reqs where leaver was requester
+//   active_req_dbids: uuid[]                // dbIds of active reqs touched by either reassignment
+// }
+export async function deactivateEmployee(empId, payload) {
+  const emp = state.employeeMaps.byId?.[empId];
+  if (!emp) throw new Error('Employee not found in memory: ' + empId);
+  const leaverUserId = emp.user_id;
+
+  // 1. Reassign recruiter assignments (if requested)
+  if (payload.reassign_recruiter_to_user_id && leaverUserId && payload.active_req_dbids?.length) {
+    const { error } = await sb.from('requisition_recruiters')
+      .update({ user_id: payload.reassign_recruiter_to_user_id })
+      .eq('user_id', leaverUserId)
+      .in('requisition_id', payload.active_req_dbids);
+    if (error) throw new Error('Recruiter reassignment failed: ' + error.message);
+  }
+
+  // 2. Reassign requester (if requested) — find reqs where they're requester and update
+  if (payload.reassign_requester_to_user_id && leaverUserId && payload.active_req_dbids?.length) {
+    const { error } = await sb.from('requisitions')
+      .update({ requester_id: payload.reassign_requester_to_user_id })
+      .eq('requester_id', leaverUserId)
+      .in('id', payload.active_req_dbids);
+    if (error) throw new Error('Requester reassignment failed: ' + error.message);
+  }
+
+  // 3. Flip status — last so reassignments are committed first
+  const updateRow = {
+    status: 'Inactive',
+    inactive_at: payload.inactive_at,
+    inactive_reason: payload.inactive_reason,
+    inactive_notes: payload.inactive_notes || null,
+    deactivated_by: state.currentAuthUser?.id || null,
+    deactivated_at: new Date().toISOString(),
+  };
+  const { data, error } = await sb.from('employees')
+    .update(updateRow).eq('id', empId).select().single();
+  if (error) throw error;
+
+  // Sync in-memory copy so the UI updates without a reload
+  Object.assign(emp, data);
+  state.employeeMaps.byId[empId] = emp;
+  return data;
+}
+
+// Reactivate flow per the v36 brief: simple status flip back to 'Active',
+// clearing the inactive_* audit columns. No reassignment, no fresh joined_at.
+export async function reactivateEmployee(empId) {
+  const emp = state.employeeMaps.byId?.[empId];
+  if (!emp) throw new Error('Employee not found in memory: ' + empId);
+  const updateRow = {
+    status: 'Active',
+    inactive_at: null,
+    inactive_reason: null,
+    inactive_notes: null,
+    deactivated_by: null,
+    deactivated_at: null,
+  };
+  const { data, error } = await sb.from('employees')
+    .update(updateRow).eq('id', empId).select().single();
+  if (error) throw error;
+  Object.assign(emp, data);
+  state.employeeMaps.byId[empId] = emp;
+  return data;
+}
+
 
 export function logActivity(reqId, text) {
   state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'] });
