@@ -22,7 +22,7 @@ import {
   saveData, saveRequisitions, enrichEntityIdsFromDb, saveSingleRequisition,
   persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
   saveCandidates, saveActivitiesTail, loadData, toast, logActivity, saveEmployee,
-  deactivateEmployee, reactivateEmployee,
+  deactivateEmployee, reactivateEmployee, autoCreateEmployeeForHire,
 } from './storage.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
@@ -3413,6 +3413,11 @@ async function offerResponse(candId, response) {
     // Gap 3 — auto-create onboarding row so the recruiter can log day 1 status
     // and the HRBP can log probation outcome at day 30.
     autoCreateOnboardingForHire(c).catch(e => console.error('[onboarding] background:', e));
+    // v37 step 5 — also auto-create the employees row so the new hire shows
+    // up in the Employees master list immediately. Best-effort; logged on failure.
+    autoCreateEmployeeForHire(c).then(emp => {
+      if (emp) toast(`${t('emp_toast_auto_created') || 'Employee record auto-created for'} ${emp.name_en}. ${t('emp_toast_auto_edit_hint') || 'Edit it in the Employees module to complete details.'}`);
+    }).catch(e => console.error('[employee auto-create]', e));
   } else if (response === 'declined') {
     c.status = 'rejected';
     reqActivity = 'Offer declined';

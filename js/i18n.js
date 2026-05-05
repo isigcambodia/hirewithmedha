@@ -329,6 +329,9 @@ export const TRANSLATIONS = {
     emp_toast_deactivated: 'Employee deactivated',
     emp_confirm_reactivate: 'Reactivate',
     emp_toast_reactivated: 'Employee reactivated',
+    // v37 step 5 — Auto-create from Hire
+    emp_toast_auto_created: 'Employee record auto-created for',
+    emp_toast_auto_edit_hint: 'Edit it in the Employees module to complete details.',
     btn_new_req_on_behalf: 'New requisition (on behalf)',
     sec_on_behalf_title: 'Raising on behalf',
     sec_on_behalf_desc: 'You are raising this requisition as a delegate. Specify which executive (Function Head or CEO) is the actual requesting authority. Leave blank for normal reqs.',
@@ -712,6 +715,9 @@ export const TRANSLATIONS = {
     emp_toast_deactivated: 'បុគ្គលិកត្រូវបានបិទដំណើរការ',
     emp_confirm_reactivate: 'បើកដំណើរការ',
     emp_toast_reactivated: 'បុគ្គលិកត្រូវបានបើកដំណើរការឡើងវិញ',
+    // v37 step 5 — Auto-create from Hire
+    emp_toast_auto_created: 'កំណត់ត្រាបុគ្គលិកត្រូវបានបង្កើតដោយស្វ័យប្រវត្តិសម្រាប់',
+    emp_toast_auto_edit_hint: 'កែសម្រួលវានៅក្នុងម៉ូឌុលបុគ្គលិកដើម្បីបំពេញព័ត៌មានលម្អិត។',
     btn_new_req_on_behalf: 'សំណើថ្មី (ក្នុងនាមអ្នកដទៃ)',
     sec_on_behalf_title: 'ការលើកឡើងក្នុងនាម',
     sec_on_behalf_desc: 'អ្នកកំពុងលើកសំណើនេះក្នុងនាមអ្នកដទៃ។ សូមបញ្ជាក់ថានរណាជាអ្នកគ្រប់គ្រងជាន់ខ្ពស់ដែលជាអ្នកស្នើពិតប្រាកដ។',

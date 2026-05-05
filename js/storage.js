@@ -1202,6 +1202,56 @@ export async function reactivateEmployee(empId) {
   return data;
 }
 
+// ---- v37 step 5: auto-create an employees row when an offer is accepted --
+// Mirrors autoCreateOnboardingForHire — pulls BU + role context from the
+// parent requisition; name/email from the candidate. Stores a placeholder
+// employee_code that HR can update later. Best-effort: a failure logs but
+// does not block the offerResponse flow that called it.
+export async function autoCreateEmployeeForHire(candidate) {
+  if (!candidate || !candidate.reqId) return null;
+  const req = state.requisitions.find(r => r.id === candidate.reqId);
+  if (!req?.buId) {
+    console.warn('[hwm] auto-create employee skipped: requisition missing buId', candidate.id);
+    return null;
+  }
+  // Skip if this candidate has already produced an employee row (idempotency
+  // for the unlikely case where offerResponse('accepted') is hit twice).
+  if (candidate._employeeAutoCreatedDbId) {
+    return state.employeeMaps.byId[candidate._employeeAutoCreatedDbId] || null;
+  }
+  const startDate = candidate.offer?.startDate || new Date().toISOString().slice(0, 10);
+  // Resolve function_id from the requisition's function name via the same
+  // deptMaps.byName pattern used elsewhere ('level:name' keys).
+  const fnEntry = req.function ? state.deptMaps.byName?.[`function:${req.function}`] : null;
+  // Placeholder code — readable, unique enough not to collide. HR replaces it
+  // when filling in remaining details from the Employees module.
+  const placeholderCode = `AUTO-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+  const payload = {
+    tenant_id: state.currentTenantId,
+    business_unit_id: req.buId,
+    employee_code: placeholderCode,
+    status: 'Active',
+    name_en: candidate.name || '—',
+    company_email: candidate.email || null,
+    function_id: fnEntry?.id || null,
+    position_title: req.roleTitle || null,
+    grade: candidate.offer?.grade || req.grade || null,
+    joined_at: startDate,
+  };
+  const { data, error } = await sb.from('employees').insert(payload).select().single();
+  if (error) {
+    console.error('[hwm] auto-create employee failed:', error);
+    return null;
+  }
+  // Memoise on the candidate so a re-accept doesn't double-insert
+  candidate._employeeAutoCreatedDbId = data.id;
+  // Refresh the in-memory map so the new row is immediately visible
+  state.employeeMaps.byId[data.id] = data;
+  if (data.employee_code) state.employeeMaps.byCode[data.employee_code] = data;
+  state.employeeMaps.list.push(data);
+  return data;
+}
+
 
 export function logActivity(reqId, text) {
   state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'] });
