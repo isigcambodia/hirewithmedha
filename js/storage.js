@@ -30,8 +30,11 @@ export function reqFromDb(row) {
     roleId: row.role_id ? state.roleLibMaps.byId[row.role_id]?.legacyId : null,
     roleTitle: row.job_title,
     isNewRole: !!row.is_new_role,
-    // Business Unit (top-level dimension above function)
-    buId: row.bu_id || null,
+    // Business Unit (top-level dimension above function).
+    // DB column was renamed bu_id → business_unit_id in v36 (Option B). The
+    // in-memory shape keeps the camelCase `buId` so views.js / utils.js
+    // don't need touching.
+    buId: row.business_unit_id || null,
     function: fn,
     subFunction: sf,
     unit: un,
@@ -179,7 +182,7 @@ export function reqToDb(r) {
     role_id: roleLibId,
     is_new_role: r.isNewRole,
     grade: r.grade,
-    bu_id: r.buId || null,
+    business_unit_id: r.buId || null,
     department_id: fnId,
     sub_function_id: sfId,
     unit_id: unId,
@@ -846,6 +849,8 @@ export async function saveSingleCandidate(c) {
   }
   const appPayload = {
     tenant_id: state.currentTenantId,
+    // BU mirrors the parent requisition (v36 — applications are BU-scoped).
+    business_unit_id: req.buId || null,
     requisition_id: req._dbId,
     candidate_id: c._dbId,
     candidate_stage: c.stage,
@@ -986,6 +991,8 @@ export async function saveCandidates(list) {
     if (!req || !req._dbId) continue;
     const appPayload = {
       tenant_id: state.currentTenantId,
+      // BU mirrors the parent requisition (v36 — applications are BU-scoped).
+      business_unit_id: req.buId || null,
       requisition_id: req._dbId,
       candidate_id: c._dbId,
       candidate_stage: c.stage,
