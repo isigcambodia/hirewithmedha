@@ -106,6 +106,27 @@ function renderHeader() {
     `;
   }
 
+  // v36 — Employees module nav. Visible to roles that manage the employee
+  // master list: admin, head_ta, hrbp, group_ceo. Hidden from function_head,
+  // recruiter, requester, ceo (BU CEOs don't manage employee records).
+  const employeesNav = document.getElementById('employeesNav');
+  if (employeesNav) {
+    const memberRole = state.currentMember?.role;
+    const canSeeEmployees = ['admin', 'head_ta', 'hrbp', 'group_ceo'].includes(memberRole);
+    if (canSeeEmployees) {
+      employeesNav.style.display = '';
+      const onEmp = state.currentView === 'employees';
+      employeesNav.innerHTML = `
+        <button class="role-btn ${onEmp ? 'active' : ''}" onclick="setView('${onEmp ? 'dashboard' : 'employees'}')" style="margin-left: 0.5rem;">
+          ${onEmp ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_employees') || 'Employees')}
+        </button>
+      `;
+    } else {
+      employeesNav.style.display = 'none';
+      employeesNav.innerHTML = '';
+    }
+  }
+
   // ⭐ User chip now shows the REAL logged-in user's name, not the hardcoded USERS[0].
   // Falls back to email if full_name isn't set on their profile.
   // When an admin previews another role via the switcher, we still show the admin's
@@ -4525,6 +4546,51 @@ async function toggleCeo(empId, checked) {
 // END EXEC WORKFLOW
 // ============================================================
 
+// ============================================================
+// EMPLOYEES MODULE — v37 Step 1 (skeleton)
+// ============================================================
+// Master list of all employees, gated to admin / head_ta / hrbp / group_ceo.
+// Subsequent steps wire up: list view with persona-aware BU column, search,
+// Add modal, Deactivate modal with reassignment, auto-create-from-Hire hook.
+// For now this is a placeholder so the nav button has somewhere to land.
+function renderEmployees() {
+  const main = document.getElementById('mainView');
+  const memberRole = state.currentMember?.role;
+  const allowed = ['admin', 'head_ta', 'hrbp', 'group_ceo'].includes(memberRole);
+  if (!allowed) {
+    main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'No access'}</div></div>`;
+    return;
+  }
+  const totalEmps = state.employeeMaps.list?.length || 0;
+  const buCount = state.userBuIds?.length || 0;
+  main.innerHTML = `
+    <div class="view-enter">
+      <div class="page-header">
+        <div class="page-title-group">
+          <div class="eyebrow">${t('eyebrow_employees') || 'Employee directory'}</div>
+          <h1>${t('title_employees') || 'Employees'}</h1>
+          <p>${t('sub_employees') || 'The single source of truth for who works at ISI Group.'}</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">${t('sec_employees_skeleton') || 'Module under construction'}</div>
+        </div>
+        <div class="panel-body">
+          <p class="text-sm text-muted">
+            v37 Step 1 — foundation in place. List view, modals, and dropdown
+            integration arrive in subsequent steps.
+          </p>
+          <ul class="text-sm text-muted" style="margin-top: 0.5rem;">
+            <li>${totalEmps} employees loaded into <code>state.employeeMaps.list</code></li>
+            <li>${buCount} BU(s) accessible to current user (<code>state.userBuIds</code>)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function setView(view) {
   state.currentView = view;
   if (view === 'dashboard') {
@@ -4541,6 +4607,7 @@ function render() {
   if (state.currentView === 'onboarding') { renderOnboarding(); return; }
   if (state.currentView === 'channel_costs') { renderChannelCosts(); return; }
   if (state.currentView === 'exec_authority') { renderExecAuthority(); return; }
+  if (state.currentView === 'employees') { renderEmployees(); return; }
   // The new req form is shared across roles that can raise reqs:
   // requester (their own), HRBP / Head of TA (on behalf of an exec), admin.
   // Centralizing the render here means every eligible role gets the same form.
@@ -4613,6 +4680,7 @@ export {
   renderCEODetail,
   renderCandCard,
   renderChannelCosts,
+  renderEmployees,
   renderExecAuthority,
   renderFHDetail,
   renderFunctionHead,

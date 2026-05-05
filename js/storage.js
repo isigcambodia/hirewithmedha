@@ -285,6 +285,24 @@ export function activityFromDb(row) {
   };
 }
 
+// ---- v36: load the current user's accessible BU ids ---------------------
+// Calls the SECURITY DEFINER Postgres helper user_business_unit_ids(), which
+// returns every BU uuid the calling user can see. For group-scoped roles
+// (admin / head_ta / recruiter / group_ceo) that's every active BU in their
+// tenants. For BU-scoped roles it's only their explicit user_business_units
+// grants. Stored on state.userBuIds for client-side filtering.
+export async function loadUserBuIds() {
+  const { data, error } = await sb.rpc('user_business_unit_ids');
+  if (error) {
+    console.error('[hwm] loadUserBuIds failed:', error);
+    state.userBuIds = [];
+    return [];
+  }
+  state.userBuIds = Array.isArray(data) ? data : [];
+  dbg('[hwm] userBuIds loaded:', state.userBuIds.length, 'BUs');
+  return state.userBuIds;
+}
+
 // ---- Main loader: fetch everything from Supabase into in-memory arrays ----
 export async function loadEverything() {
   const t = state.currentTenantId;

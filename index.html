@@ -54,6 +54,7 @@
       <span class="dev-badge">Dev Mode</span>
       <div class="role-switcher" id="roleSwitcher"></div>
       <div id="onboardingNav" style="display: none;"></div>
+      <div id="employeesNav" style="display: none;"></div>
       <div id="adminNav" style="display: none;"></div>
       <div class="user-chip" id="userChip"></div>
     </div>
@@ -175,7 +176,7 @@
 import { sb } from './js/config.js';
 import { state } from './js/state.js';
 import { HWM_BUILD, HWM_DEBUG, dbg } from './js/helpers.js';
-import { setOnDataChanged, setNavigateTo, loadEverything } from './js/storage.js';
+import { setOnDataChanged, setNavigateTo, loadEverything, loadUserBuIds } from './js/storage.js';
 import * as Utils from './js/utils.js';
 import * as Views from './js/views.js';
 const { render, renderHeader, setView } = Views;
@@ -281,6 +282,7 @@ async function bootAfterAuth() {
     hrbp: 'hrbp',
     function_head: 'function_head',
     ceo: 'ceo',
+    group_ceo: 'ceo',               // v36 — Kang Leng's group-scoped role lands on the CEO view
     head_ta: 'head_ta',
     recruiter: 'recruiter',
     hiring_manager: 'recruiter',   // HMs see the recruiter-style candidate view
@@ -291,6 +293,9 @@ async function bootAfterAuth() {
 
   // Load DB data into the prototype's in-memory arrays
   await loadEverything();
+  // v36 — fetch which BUs this user is allowed to see; drives the new
+  // Employees module's persona-aware UI (BU column, BU filter dropdown).
+  await loadUserBuIds();
 
   // Language pref
   const savedLang = localStorage.getItem('hwm_lang') || 'en';
