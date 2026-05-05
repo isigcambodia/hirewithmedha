@@ -326,7 +326,7 @@ export async function loadEverything() {
       .eq('tenant_id', t).eq('status', 'active'),
     // Employees: source of truth for Supervisor/HM pickers. Includes people
     // without logins (most of the 745). Name resolution + dropdowns pull from here.
-    sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, company_email, user_id, company, is_function_head, is_ceo, status, business_unit_id, joined_at, inactive_at, inactive_reason, inactive_notes, deactivated_by, deactivated_at').eq('tenant_id', t).order('name_en'),
+    sb.from('employees').select('id, employee_code, name_en, name_kh, position_title, grade, function_id, department_id, line_manager_code, company_email, user_id, company, is_function_head, is_ceo, status, business_unit_id, joined_at, inactive_at, inactive_reason, inactive_notes, deactivated_by, deactivated_at').eq('tenant_id', t).order('name_en'),
     // Gap 3 — Onboarding records. Always fetched (table may be empty initially).
     sb.from('onboarding').select('*').eq('tenant_id', t).is('deleted_at', null),
     // Gap 2 — Periodic channel costs (e.g. "LinkedIn Recruiter Q1 = $4,500")
