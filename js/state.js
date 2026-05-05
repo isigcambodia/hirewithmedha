@@ -41,4 +41,9 @@ export const state = {
 
   // Onboarding UI tab state
   onboardingTab: 'starts',
+
+  // v37 Employees module — list view UI state
+  employeesTab: 'all',          // 'all' | 'active' | 'inactive'
+  employeesSearch: '',          // free-text name filter
+  employeesBuFilter: 'all',     // 'all' | <bu uuid>  (group-scoped users only)
 };
