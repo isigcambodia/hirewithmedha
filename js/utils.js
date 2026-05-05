@@ -32,14 +32,34 @@ export function canRaiseReqOnBehalf() {
 
 // Returns list of employees marked as Function Head or CEO (for the
 // "On behalf of" dropdown). Sorted with CEO first.
+// v37 step 6: filters to status='Active' so deactivated execs disappear,
+// and to the current user's BU scope so HRBPs only see their own execs.
 export function getExecAuthorities() {
-  const list = (state.employeeMaps.list || []).filter(e => e.is_function_head || e.is_ceo);
+  const userBuSet = new Set(state.userBuIds || []);
+  const list = (state.employeeMaps.list || []).filter(e =>
+    e.status === 'Active' &&
+    (e.is_function_head || e.is_ceo) &&
+    (!e.business_unit_id || userBuSet.has(e.business_unit_id))
+  );
   // CEO first, then FHs alphabetically
   return list.sort((a, b) => {
     if (a.is_ceo && !b.is_ceo) return -1;
     if (b.is_ceo && !a.is_ceo) return 1;
     return (a.name_en || '').localeCompare(b.name_en || '');
   });
+}
+
+// v37 step 6: shared filter for any picker that lets users PICK a current
+// employee. Returns active employees within the user's BU scope (or with no
+// BU at all). Lookup-by-id call sites (e.g. resolving an old supervisor on a
+// historical req) should still read state.employeeMaps.list directly so
+// inactive / out-of-scope employees can still be displayed.
+export function getActiveEmployeesInScope() {
+  const userBuSet = new Set(state.userBuIds || []);
+  return (state.employeeMaps.list || []).filter(e =>
+    e.status === 'Active' &&
+    (!e.business_unit_id || userBuSet.has(e.business_unit_id))
+  );
 }
 
 // Detect if a req is an exec hire (HM is FH or CEO). Drives the routing.

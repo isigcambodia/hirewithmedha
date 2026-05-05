@@ -26,6 +26,7 @@ import {
 } from './storage.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
+  getActiveEmployeesInScope,
   getUser, getUserName, getUserInitials, getUserRoleLabel, getRequesterDisplay,
   getUsersWithRoles, getSupervisorName, getHiringManagerName,
   daysSince, daysUntil, formatDate, formatDateTime,
@@ -521,7 +522,7 @@ function renderNewReqForm() {
                Format: "Name — Position 8" (plain numeric grade). Actual lookup
                is by exact label match when submitted. -->
           <datalist id="employeeOptions">
-            ${state.employeeMaps.list.map(e => {
+            ${getActiveEmployeesInScope().map(e => {
               const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
               return `<option value="${label.replace(/"/g, '&quot;')}"></option>`;
             }).join('')}
@@ -3039,7 +3040,7 @@ function addCandidate(reqId) {
             <label>Referred by</label>
             <select id="candReferralEmp">
               <option value="">— None —</option>
-              ${(state.employeeMaps.list || []).slice(0, 200).map(e => `<option value="${e.id}">${e.name_en || e.name_kh || ''} ${e.position_title ? '· ' + e.position_title : ''}</option>`).join('')}
+              ${getActiveEmployeesInScope().slice(0, 200).map(e => `<option value="${e.id}">${e.name_en || e.name_kh || ''} ${e.position_title ? '· ' + e.position_title : ''}</option>`).join('')}
             </select>
             <div class="text-xs text-muted">Only if source is "Referral". Showing first 200 employees.</div>
           </div>
@@ -4412,7 +4413,8 @@ function renderExecAuthority() {
 
   // Filter employees with roles likely to be exec — we don't list all 745 here.
   // Show: anyone already flagged + anyone whose position_title contains 'Head', 'Chief', 'CEO', 'Director'.
-  const allEmps = state.employeeMaps.list || [];
+  // v37 step 6: skip Inactive employees so deactivated execs don't haunt the list.
+  const allEmps = (state.employeeMaps.list || []).filter(e => e.status === 'Active');
   const execCandidates = allEmps.filter(e =>
     e.is_function_head || e.is_ceo ||
     /head|chief|ceo|director|president/i.test(e.position_title || '')
