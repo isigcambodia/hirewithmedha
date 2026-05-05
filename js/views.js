@@ -4696,6 +4696,7 @@ function renderEmployees() {
       ${showBuCol ? `<th>${t('emp_th_bu') || 'BU'}</th>` : ''}
       <th>${t('emp_th_function') || 'Function'}</th>
       <th>${t('emp_th_department') || 'Department'}</th>
+      <th>${t('emp_th_section') || 'Section'}</th>
       <th>${t('emp_th_role') || 'Role'}</th>
       <th>${t('emp_th_supervisor') || 'Supervisor'}</th>
       <th>${t('emp_th_joined') || 'Joined'}</th>
@@ -4704,7 +4705,7 @@ function renderEmployees() {
   `;
 
   const rowsHtml = list.length === 0
-    ? `<tr><td colspan="${showBuCol ? 8 : 7}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
+    ? `<tr><td colspan="${showBuCol ? 9 : 8}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
     : list.map(e => {
         const inactive = e.status === 'Inactive';
         const rowStyle = inactive ? 'opacity: 0.65;' : '';
@@ -4726,6 +4727,7 @@ function renderEmployees() {
             ${showBuCol ? `<td>${_empBuTag(e)}</td>` : ''}
             <td>${esc(_empFunctionName(e))}</td>
             <td>${esc(_empDepartmentName(e))}</td>
+            <td>${esc(e.section || '—')}</td>
             <td>${roleLabel}</td>
             <td>${esc(_empSupervisorName(e))}</td>
             <td>${dateCell}</td>
