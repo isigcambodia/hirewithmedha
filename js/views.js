@@ -4547,12 +4547,65 @@ async function toggleCeo(empId, checked) {
 // ============================================================
 
 // ============================================================
-// EMPLOYEES MODULE — v37 Step 1 (skeleton)
+// EMPLOYEES MODULE — v37 Step 2 (list view)
 // ============================================================
 // Master list of all employees, gated to admin / head_ta / hrbp / group_ceo.
-// Subsequent steps wire up: list view with persona-aware BU column, search,
-// Add modal, Deactivate modal with reassignment, auto-create-from-Hire hook.
-// For now this is a placeholder so the nav button has somewhere to land.
+// Persona-aware: BU-scoped users see only their BU(s) and no BU column;
+// group-scoped users see every BU plus a BU filter dropdown and a BU column.
+// Add / Edit / Deactivate / Reactivate buttons land in steps 3-4.
+
+// Returns 'group' for group-scoped roles, 'bu' for BU-scoped.
+function _empPersona() {
+  const r = state.currentMember?.role;
+  return ['admin', 'head_ta', 'group_ceo', 'recruiter'].includes(r) ? 'group' : 'bu';
+}
+
+function _empBuName(emp) {
+  if (!emp?.business_unit_id) return '—';
+  const bu = (state.businessUnits || []).find(b => b.id === emp.business_unit_id);
+  return bu?.name || '—';
+}
+
+function _empBuTag(emp) {
+  if (!emp?.business_unit_id) return '<span class="badge badge-neutral">—</span>';
+  const bu = (state.businessUnits || []).find(b => b.id === emp.business_unit_id);
+  if (!bu) return '<span class="badge badge-neutral">—</span>';
+  // STEEL gets navy, others get neutral. Color-coded extension can grow later.
+  const cls = bu.code === 'STEEL' ? 'badge-info' : 'badge-neutral';
+  return `<span class="badge ${cls}">${esc(bu.code || bu.name)}</span>`;
+}
+
+function _empFunctionName(emp) {
+  if (!emp?.function_id) return '—';
+  return state.deptMaps.byId?.[emp.function_id]?.name || '—';
+}
+
+// Apply the persona + BU-filter + status-tab + search pipeline. Returns a
+// filtered slice of state.employeeMaps.list for current UI state.
+function _filteredEmployees() {
+  const all = state.employeeMaps.list || [];
+  const persona = _empPersona();
+  const userBuSet = new Set(state.userBuIds || []);
+  // BU scope (server already enforces via RLS; this is the symmetric client filter)
+  let list = all.filter(e => !e.business_unit_id || userBuSet.has(e.business_unit_id));
+  // BU filter (group-scoped users with non-default selection)
+  if (persona === 'group' && state.employeesBuFilter && state.employeesBuFilter !== 'all') {
+    list = list.filter(e => e.business_unit_id === state.employeesBuFilter);
+  }
+  // Tab filter
+  if (state.employeesTab === 'active') list = list.filter(e => e.status === 'Active');
+  else if (state.employeesTab === 'inactive') list = list.filter(e => e.status === 'Inactive');
+  // Search (case-insensitive substring on EN or KM name)
+  const q = (state.employeesSearch || '').trim().toLowerCase();
+  if (q) {
+    list = list.filter(e =>
+      (e.name_en || '').toLowerCase().includes(q) ||
+      (e.name_kh || '').toLowerCase().includes(q)
+    );
+  }
+  return list;
+}
+
 function renderEmployees() {
   const main = document.getElementById('mainView');
   const memberRole = state.currentMember?.role;
@@ -4561,8 +4614,108 @@ function renderEmployees() {
     main.innerHTML = `<div class="empty"><div class="empty-title">${t('err_no_access') || 'No access'}</div></div>`;
     return;
   }
-  const totalEmps = state.employeeMaps.list?.length || 0;
-  const buCount = state.userBuIds?.length || 0;
+
+  const persona = _empPersona();
+  const all = state.employeeMaps.list || [];
+  const userBuSet = new Set(state.userBuIds || []);
+  // Counts honour the BU-scope and BU filter, but ignore the tab so each
+  // tab pill always shows its own absolute count for the current scope.
+  const inScope = all.filter(e => !e.business_unit_id || userBuSet.has(e.business_unit_id))
+    .filter(e => persona !== 'group' || state.employeesBuFilter === 'all' || e.business_unit_id === state.employeesBuFilter);
+  const counts = {
+    all:      inScope.length,
+    active:   inScope.filter(e => e.status === 'Active').length,
+    inactive: inScope.filter(e => e.status === 'Inactive').length,
+  };
+  const list = _filteredEmployees();
+  const showBuCol = persona === 'group';
+
+  // Scope-context strip: tells the user exactly what they're seeing.
+  let scopeContext = '';
+  if (persona === 'bu') {
+    const myBus = (state.businessUnits || []).filter(b => userBuSet.has(b.id));
+    const buNames = myBus.map(b => b.name).join(' + ') || '—';
+    scopeContext = `<div class="text-sm text-muted" style="margin-bottom: 0.75rem;">${t('emp_scope_bu') || 'Showing employees in'} <strong>${esc(buNames)}</strong> ${t('emp_scope_bu_only') || 'only — your assigned business unit.'}</div>`;
+  } else {
+    scopeContext = `<div class="text-sm text-muted" style="margin-bottom: 0.75rem;">${t('emp_scope_group') || 'Showing employees across'} <strong>${t('emp_all_bus') || 'all business units'}</strong> ${t('emp_scope_group_suffix') || '— group-level access.'}</div>`;
+  }
+
+  // BU filter dropdown for group-scoped users
+  let buFilterHtml = '';
+  if (persona === 'group') {
+    const accessibleBus = (state.businessUnits || []).filter(b => userBuSet.has(b.id));
+    const opts = accessibleBus.map(b =>
+      `<option value="${esc(b.id)}" ${state.employeesBuFilter === b.id ? 'selected' : ''}>${esc(b.name)}</option>`
+    ).join('');
+    buFilterHtml = `
+      <select onchange="onEmployeesBuFilterChange(this.value)" class="select-sm" style="margin-right: 0.5rem;">
+        <option value="all" ${state.employeesBuFilter === 'all' ? 'selected' : ''}>${t('emp_filter_all_bus') || 'All BUs'} (${accessibleBus.length})</option>
+        ${opts}
+      </select>
+    `;
+  }
+
+  // Auto-create banner
+  const autoBanner = `
+    <div class="panel" style="background: var(--brand-orange-soft, #fef5e7); border: 1px solid var(--brand-orange-border, #fde6c7); margin-bottom: 1rem;">
+      <div class="panel-body" style="display: flex; gap: 0.75rem; align-items: flex-start;">
+        <div style="flex: 0 0 24px;">${ICONS.info}</div>
+        <div class="text-sm">
+          <strong>${t('emp_banner_title') || 'New hires are auto-added.'}</strong>
+          ${t('emp_banner_desc') || 'When an application moves to Hired, the candidate is added here automatically — assigned to the BU of the requisition. You only need to add people by hand for backfills, transfers, or non-recruited additions.'}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Tabs row
+  const tabBtn = (id, label) => `
+    <button class="tab ${state.employeesTab === id ? 'active' : ''}" onclick="setEmployeesTab('${id}')">
+      ${label} <span class="tab-count">${counts[id]}</span>
+    </button>
+  `;
+
+  // Table
+  const tableHead = `
+    <thead><tr>
+      <th>${t('emp_th_name') || 'Name'}</th>
+      ${showBuCol ? `<th>${t('emp_th_bu') || 'BU'}</th>` : ''}
+      <th>${t('emp_th_function') || 'Function'}</th>
+      <th>${t('emp_th_role') || 'Role'}</th>
+      <th>${t('emp_th_joined') || 'Joined'}</th>
+      <th>${t('emp_th_status') || 'Status'}</th>
+    </tr></thead>
+  `;
+
+  const rowsHtml = list.length === 0
+    ? `<tr><td colspan="${showBuCol ? 6 : 5}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
+    : list.map(e => {
+        const inactive = e.status === 'Inactive';
+        const rowStyle = inactive ? 'opacity: 0.65;' : '';
+        const dateCell = inactive
+          ? `<span class="text-sm">${t('emp_left_on') || 'left'} ${formatDate(e.inactive_at)}</span>${e.inactive_reason ? `<div class="text-xs text-muted">${esc(e.inactive_reason)}</div>` : ''}`
+          : `<span class="text-sm">${e.joined_at ? formatDate(e.joined_at) : '—'}</span>`;
+        const statusBadgeHtml = inactive
+          ? `<span class="badge badge-neutral">${t('emp_status_inactive') || 'Inactive'}</span>`
+          : `<span class="badge badge-success">${t('emp_status_active') || 'Active'}</span>`;
+        const roleLabel = e.is_ceo
+          ? (t('emp_role_ceo') || 'CEO')
+          : (e.is_function_head ? (t('emp_role_function_head') || 'Function Head') : esc(e.position_title || '—'));
+        return `
+          <tr style="${rowStyle}">
+            <td>
+              <div class="role-title">${esc(e.name_en || '—')}</div>
+              ${e.name_kh ? `<div class="text-xs text-muted">${esc(e.name_kh)}</div>` : ''}
+            </td>
+            ${showBuCol ? `<td>${_empBuTag(e)}</td>` : ''}
+            <td>${esc(_empFunctionName(e))}</td>
+            <td>${roleLabel}</td>
+            <td>${dateCell}</td>
+            <td>${statusBadgeHtml}</td>
+          </tr>
+        `;
+      }).join('');
+
   main.innerHTML = `
     <div class="view-enter">
       <div class="page-header">
@@ -4571,24 +4724,53 @@ function renderEmployees() {
           <h1>${t('title_employees') || 'Employees'}</h1>
           <p>${t('sub_employees') || 'The single source of truth for who works at ISI Group.'}</p>
         </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">${t('sec_employees_skeleton') || 'Module under construction'}</div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button class="btn btn-secondary" onclick="alert('${esc(t('emp_bulk_soon') || 'Bulk upload — coming soon')}')">${t('emp_btn_bulk') || 'Bulk upload'}</button>
+          <button class="btn btn-primary" disabled title="${esc(t('emp_add_soon') || 'Add Employee — coming in step 3')}">${ICONS.plus} ${t('emp_btn_add') || 'Add Employee'}</button>
         </div>
-        <div class="panel-body">
-          <p class="text-sm text-muted">
-            v37 Step 1 — foundation in place. List view, modals, and dropdown
-            integration arrive in subsequent steps.
-          </p>
-          <ul class="text-sm text-muted" style="margin-top: 0.5rem;">
-            <li>${totalEmps} employees loaded into <code>state.employeeMaps.list</code></li>
-            <li>${buCount} BU(s) accessible to current user (<code>state.userBuIds</code>)</li>
-          </ul>
+      </div>
+      ${scopeContext}
+      ${autoBanner}
+      <div class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;">
+          <div class="tabs">
+            ${tabBtn('all', t('emp_tab_all') || 'All')}
+            ${tabBtn('active', t('emp_tab_active') || 'Active')}
+            ${tabBtn('inactive', t('emp_tab_inactive') || 'Inactive')}
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            ${buFilterHtml}
+            <input type="text" placeholder="${esc(t('emp_search_ph') || 'Search by name…')}" value="${esc(state.employeesSearch)}" oninput="onEmployeesSearch(this.value)" class="input-sm" style="width: 200px;">
+          </div>
+        </div>
+        <div class="panel-body no-pad">
+          <table class="table">
+            ${tableHead}
+            <tbody>${rowsHtml}</tbody>
+          </table>
         </div>
       </div>
     </div>
   `;
+}
+
+// Wire functions for tabs / search / BU filter (exposed to window via Views).
+function setEmployeesTab(tab) {
+  state.employeesTab = tab;
+  renderEmployees();
+}
+function onEmployeesSearch(q) {
+  state.employeesSearch = q;
+  // Re-render only the table-and-tabs region would be nicer, but a full
+  // re-render keeps things simple and the list size is small enough.
+  renderEmployees();
+  // Restore focus + caret position on the search input post-render.
+  const input = document.querySelector('input[oninput^="onEmployeesSearch"]');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+function onEmployeesBuFilterChange(v) {
+  state.employeesBuFilter = v;
+  renderEmployees();
 }
 
 function setView(view) {
@@ -4708,6 +4890,9 @@ export {
   scheduleInterview,
   sendOffer,
   setAutofilled,
+  setEmployeesTab,
+  onEmployeesSearch,
+  onEmployeesBuFilterChange,
   setOnboardingTab,
   setView,
   statusChip,
