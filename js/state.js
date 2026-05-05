@@ -26,6 +26,10 @@ export const state = {
   roleLibMaps: { byTitle: {}, byId: {} },
   employeeMaps: { byId: {}, byCode: {}, byUserId: {}, list: [] },
   businessUnits: [],
+  // v36 BU scoping — uuids of BUs visible to the current user. Populated at
+  // login from the user_business_unit_ids() Postgres helper. Group-scoped
+  // roles get every active BU; BU-scoped users get only their explicit grants.
+  userBuIds: [],
   realUsersByUuid: {},
 
   // Domain data, populated from Supabase
