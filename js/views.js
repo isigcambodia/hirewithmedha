@@ -22,6 +22,7 @@ import {
   saveData, saveRequisitions, enrichEntityIdsFromDb, saveSingleRequisition,
   persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
   saveCandidates, saveActivitiesTail, loadData, toast, logActivity, saveEmployee,
+  deactivateEmployee, reactivateEmployee,
 } from './storage.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
@@ -4701,11 +4702,12 @@ function renderEmployees() {
       <th>${t('emp_th_supervisor') || 'Supervisor'}</th>
       <th>${t('emp_th_joined') || 'Joined'}</th>
       <th>${t('emp_th_status') || 'Status'}</th>
+      <th style="text-align: right;">${t('emp_th_actions') || 'Actions'}</th>
     </tr></thead>
   `;
 
   const rowsHtml = list.length === 0
-    ? `<tr><td colspan="${showBuCol ? 9 : 8}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
+    ? `<tr><td colspan="${showBuCol ? 10 : 9}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
     : list.map(e => {
         const inactive = e.status === 'Inactive';
         const rowStyle = inactive ? 'opacity: 0.65;' : '';
@@ -4732,6 +4734,11 @@ function renderEmployees() {
             <td>${esc(_empSupervisorName(e))}</td>
             <td>${dateCell}</td>
             <td>${statusBadgeHtml}</td>
+            <td style="text-align: right;">${
+              inactive
+                ? `<button class="btn btn-secondary btn-sm" onclick="confirmReactivateEmployee('${escJs(e.id)}')">${t('emp_btn_reactivate') || 'Reactivate'}</button>`
+                : `<button class="btn btn-danger btn-sm" onclick="openDeactivateEmployeeModal('${escJs(e.id)}')">${t('emp_btn_deactivate') || 'Deactivate'}</button>`
+            }</td>
           </tr>
         `;
       }).join('');
@@ -4997,6 +5004,183 @@ async function submitAddEmployee() {
   }
 }
 
+// ---- Deactivate Employee modal -------------------------------------------
+// Surfaces open items the leaver owns and forces reassignment before commit:
+//   * Active recruiter assignments (requisition_recruiters where they're the recruiter)
+//   * In-progress requisitions raised by them (requisitions where requester_id matches)
+// If the employee has no auth user_id (most master-file rows), reassignment
+// section is skipped entirely.
+const _DEACT_REASONS = [
+  { v: 'resignation',     k: 'emp_reason_resignation' },
+  { v: 'termination',     k: 'emp_reason_termination' },
+  { v: 'end_of_contract', k: 'emp_reason_end_of_contract' },
+  { v: 'transfer',        k: 'emp_reason_transfer' },
+  { v: 'retirement',      k: 'emp_reason_retirement' },
+  { v: 'other',           k: 'emp_reason_other' },
+];
+
+// Status values that count as "active" requisitions for reassignment purposes.
+// Closed / rejected / cancelled / on_hold reqs aren't worth reassigning.
+const _ACTIVE_REQ_STATUSES = new Set([
+  'hrbp_review', 'fh_approval', 'ceo_approval', 'ta_assignment',
+  'active_sourcing', 'pending_close', 'revisions_requested',
+]);
+
+function _empOpenItems(empUserId) {
+  if (!empUserId) return { recruiterReqs: [], requesterReqs: [] };
+  const reqs = state.requisitions || [];
+  return {
+    recruiterReqs: reqs.filter(r => _ACTIVE_REQ_STATUSES.has(r.status) && (r.assignedRecruiters || []).includes(empUserId)),
+    requesterReqs: reqs.filter(r => _ACTIVE_REQ_STATUSES.has(r.status) && r.requesterId === empUserId),
+  };
+}
+
+function openDeactivateEmployeeModal(empId) {
+  const emp = state.employeeMaps.byId?.[empId];
+  if (!emp) { toast(t('emp_err_not_found') || 'Employee not found', true); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const open = _empOpenItems(emp.user_id);
+  const userBuSet = new Set(state.userBuIds || []);
+
+  // Replacement candidates (other active employees with auth accounts in the user's BU scope).
+  // Scope to active recruiter pool for recruiter reassignment; for requester reassignment,
+  // any active staff with a user_id is eligible (HR will pick someone with the right role).
+  const replacementPool = (state.employeeMaps.list || [])
+    .filter(e => e.id !== emp.id && e.status === 'Active' && e.user_id && (!e.business_unit_id || userBuSet.has(e.business_unit_id)))
+    .sort((a, b) => (a.name_en || '').localeCompare(b.name_en || ''));
+
+  const replacementOpts = replacementPool.map(e => `<option value="${esc(e.user_id)}">${esc(e.name_en || '—')}${e.position_title ? ' — ' + esc(e.position_title) : ''}</option>`).join('');
+
+  const recruiterBlock = open.recruiterReqs.length > 0 ? `
+    <div class="form-group" style="background: var(--brand-orange-soft, #fef5e7); border: 1px solid var(--brand-orange-border, #fde6c7); border-radius: 0.4rem; padding: 0.75rem 0.9rem; margin-top: 0.75rem;">
+      <label class="required" style="color: var(--brand-blaze, #b45309);">⚠ ${open.recruiterReqs.length} ${t('emp_open_recruiter') || 'open recruiter assignment(s)'}</label>
+      <div class="text-xs text-muted" style="margin-bottom: 0.4rem;">${t('emp_reassign_recruiter_hint') || 'Pick who takes over these requisitions:'}</div>
+      <select id="empReassignRecruiterTo">
+        <option value="">${t('emp_ph_pick_replacement') || '— pick a replacement —'}</option>
+        ${replacementOpts}
+      </select>
+    </div>` : '';
+
+  const requesterBlock = open.requesterReqs.length > 0 ? `
+    <div class="form-group" style="background: var(--brand-orange-soft, #fef5e7); border: 1px solid var(--brand-orange-border, #fde6c7); border-radius: 0.4rem; padding: 0.75rem 0.9rem; margin-top: 0.5rem;">
+      <label class="required" style="color: var(--brand-blaze, #b45309);">⚠ ${open.requesterReqs.length} ${t('emp_open_requester') || 'in-progress requisition(s) as requester'}</label>
+      <div class="text-xs text-muted" style="margin-bottom: 0.4rem;">${t('emp_reassign_requester_hint') || 'Pick who takes ownership of these reqs:'}</div>
+      <select id="empReassignRequesterTo">
+        <option value="">${t('emp_ph_pick_replacement') || '— pick a replacement —'}</option>
+        ${replacementOpts}
+      </select>
+    </div>` : '';
+
+  // Stash the active req dbids as a data attribute on a hidden input so the
+  // submit handler can pass them into deactivateEmployee.
+  const activeDbIds = [
+    ...new Set([
+      ...open.recruiterReqs.map(r => r._dbId),
+      ...open.requesterReqs.map(r => r._dbId),
+    ].filter(Boolean))
+  ].join(',');
+
+  openModal(`
+    <div class="modal-header">
+      <h2>${t('emp_modal_deact_title') || 'Deactivate Employee'}</h2>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <p class="modal-desc">${t('emp_modal_deact_desc') || 'Mark'} <strong>${esc(emp.name_en || emp.employee_code)}</strong> ${t('emp_modal_deact_desc_2') || 'as no longer with the company.'}</p>
+
+    <input type="hidden" id="empDeactId" value="${esc(emp.id)}">
+    <input type="hidden" id="empDeactActiveDbIds" value="${esc(activeDbIds)}">
+
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="required">${t('emp_field_reason') || 'Reason'}</label>
+        <select id="empDeactReason">
+          ${_DEACT_REASONS.map(r => `<option value="${r.v}">${t(r.k) || r.v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="required">${t('emp_field_last_day') || 'Last working day'}</label>
+        <input type="date" id="empDeactLastDay" value="${today}">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>${t('emp_field_notes') || 'Notes'} <span class="text-xs text-muted">${t('emp_field_optional') || '(optional)'}</span></label>
+      <textarea id="empDeactNotes" rows="2" placeholder="${esc(t('emp_field_notes_ph') || 'Internal context — handover details, exit notes, etc.')}"></textarea>
+    </div>
+
+    ${recruiterBlock}
+    ${requesterBlock}
+
+    ${(!open.recruiterReqs.length && !open.requesterReqs.length && emp.user_id) ? `
+      <div class="text-xs text-muted" style="margin-top: 0.5rem;">${t('emp_no_open_items') || 'No open items needing reassignment.'}</div>
+    ` : ''}
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel') || 'Cancel'}</button>
+      <button class="btn btn-danger" onclick="submitDeactivateEmployee()">${ICONS.x} ${t('emp_btn_deact_confirm') || 'Deactivate & Reassign'}</button>
+    </div>
+  `);
+}
+
+async function submitDeactivateEmployee() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const empId = v('empDeactId');
+  const reason = v('empDeactReason');
+  const lastDay = v('empDeactLastDay');
+  const notes = v('empDeactNotes');
+  const reassignRecruiter = v('empReassignRecruiterTo');
+  const reassignRequester = v('empReassignRequesterTo');
+  const activeDbIdsRaw = v('empDeactActiveDbIds');
+  const activeDbIds = activeDbIdsRaw ? activeDbIdsRaw.split(',').filter(Boolean) : [];
+
+  if (!empId)   { toast(t('emp_err_not_found') || 'Employee not found', true); return; }
+  if (!reason)  { toast(t('emp_err_reason_required') || 'Reason is required', true); return; }
+  if (!lastDay) { toast(t('emp_err_last_day_required') || 'Last working day is required', true); return; }
+
+  // If reassignment dropdowns exist, they're required.
+  if (document.getElementById('empReassignRecruiterTo') && !reassignRecruiter) {
+    toast(t('emp_err_pick_recruiter_replacement') || 'Pick someone to take over the recruiter assignments', true); return;
+  }
+  if (document.getElementById('empReassignRequesterTo') && !reassignRequester) {
+    toast(t('emp_err_pick_requester_replacement') || 'Pick someone to take over the in-progress requisitions', true); return;
+  }
+
+  try {
+    await deactivateEmployee(empId, {
+      inactive_at: lastDay,
+      inactive_reason: reason,
+      inactive_notes: notes,
+      reassign_recruiter_to_user_id: reassignRecruiter || null,
+      reassign_requester_to_user_id: reassignRequester || null,
+      active_req_dbids: activeDbIds,
+    });
+    toast(t('emp_toast_deactivated') || 'Employee deactivated');
+    closeModal();
+    // Reload requisitions if reassignments touched any — easier than mutating in-memory by hand.
+    if (activeDbIds.length) await loadEverything();
+    renderEmployees();
+  } catch (e) {
+    console.error('deactivateEmployee failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
+async function confirmReactivateEmployee(empId) {
+  const emp = state.employeeMaps.byId?.[empId];
+  if (!emp) { toast(t('emp_err_not_found') || 'Employee not found', true); return; }
+  if (!confirm(`${t('emp_confirm_reactivate') || 'Reactivate'} ${emp.name_en || emp.employee_code}?`)) return;
+  try {
+    await reactivateEmployee(empId);
+    toast(t('emp_toast_reactivated') || 'Employee reactivated');
+    renderEmployees();
+  } catch (e) {
+    console.error('reactivateEmployee failed:', e);
+    const f = friendlyError ? friendlyError(e) : { title: e.message, hint: '' };
+    toast(f.hint ? `${f.title} — ${f.hint}` : f.title, true);
+  }
+}
+
 function setView(view) {
   state.currentView = view;
   if (view === 'dashboard') {
@@ -5119,6 +5303,9 @@ export {
   onEmployeesBuFilterChange,
   openAddEmployeeModal,
   submitAddEmployee,
+  openDeactivateEmployeeModal,
+  submitDeactivateEmployee,
+  confirmReactivateEmployee,
   setOnboardingTab,
   setView,
   statusChip,
