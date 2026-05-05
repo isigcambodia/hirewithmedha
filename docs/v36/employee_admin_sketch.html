@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hire with Medhā · Employees (sketch v2)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Khmer:wght@400;500;600&family=Noto+Serif+Khmer:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --navy: #00338d;
+    --navy-dark: #001f5c;
+    --navy-soft: #e6ecf6;
+    --orange: #ff650e;
+    --orange-soft: #ffece0;
+    --paper: #faf6f0;
+    --paper-2: #f1ebe0;
+    --paper-3: #ebe3d3;
+    --ink: #1a1a1a;
+    --ink-2: #4a4a4a;
+    --muted: #6b6b6b;
+    --muted-2: #9b9b9b;
+    --rule: #e5dfd2;
+    --rule-2: #d6cdb8;
+    --success: #2d7a4a;
+    --success-soft: #e6f1ea;
+    --danger: #b53329;
+    --danger-soft: #fbe8e6;
+    --bu-steel: #00338d;
+    --bu-steel-soft: #e6ecf6;
+    --bu-energy: #7a4f00;
+    --bu-energy-soft: #f5ecda;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Inter Tight", system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .km { font-family: "Noto Sans Khmer", sans-serif; }
+  .km-serif { font-family: "Noto Serif Khmer", serif; }
+  .mono { font-family: "JetBrains Mono", monospace; }
+  .serif { font-family: "Fraunces", Georgia, serif; }
+
+  .shell { max-width: 1200px; margin: 0 auto; padding: 28px 28px 80px; }
+
+  /* ---------------- topbar with persona switcher ---------------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 24px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--navy);
+    display: grid; place-items: center;
+  }
+  .brand-mark::after {
+    content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--paper);
+  }
+  .brand-name {
+    font-family: "Fraunces", serif; font-weight: 600; font-size: 17px;
+    color: var(--navy); letter-spacing: -0.01em;
+  }
+  .brand-sub { font-size: 12px; color: var(--muted); margin-top: -2px; }
+
+  /* persona switcher (sketch only) */
+  .persona-bar {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .persona-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted-2); font-family: "JetBrains Mono", monospace;
+  }
+  .persona-toggle {
+    display: flex; gap: 2px; padding: 3px; background: var(--paper-2);
+    border-radius: 7px; border: 1px dashed var(--rule-2);
+  }
+  .persona-btn {
+    border: none; background: transparent; padding: 6px 11px;
+    font: inherit; font-size: 12px; font-weight: 500; color: var(--muted);
+    border-radius: 5px; cursor: pointer;
+  }
+  .persona-btn.active {
+    background: white; color: var(--navy);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .persona-btn small {
+    display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 1px;
+  }
+  .persona-btn.active small { color: var(--muted); }
+
+  /* ---------------- page header ---------------- */
+  h1.page-title {
+    font-family: "Fraunces", serif; font-weight: 500; font-size: 40px;
+    line-height: 1.05; letter-spacing: -0.02em; color: var(--ink); margin: 0;
+  }
+  h1.page-title .km { font-size: 26px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+  .page-sub { color: var(--muted); font-size: 14px; margin: 8px 0 22px; max-width: 580px; }
+
+  /* ---------------- scope context ---------------- */
+  .scope-ctx {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 18px; background: white; border: 1px solid var(--rule);
+    border-radius: 8px; margin-bottom: 18px;
+  }
+  .scope-left { display: flex; align-items: center; gap: 14px; }
+  .scope-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 4px;
+    font-size: 12px; font-weight: 500;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .scope-pill.steel { background: var(--bu-steel-soft); color: var(--bu-steel); }
+  .scope-pill.group { background: var(--orange-soft); color: var(--orange); }
+  .scope-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .scope-text { font-size: 13px; color: var(--muted); }
+  .scope-text strong { color: var(--ink); font-weight: 500; }
+
+  /* ---------------- info banner ---------------- */
+  .auto-banner {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 12px 16px; background: var(--navy-soft);
+    border-left: 3px solid var(--navy); border-radius: 4px;
+    margin-bottom: 24px; font-size: 13px; color: var(--ink-2);
+  }
+  .auto-banner .icon {
+    width: 18px; height: 18px; border-radius: 50%; background: var(--navy);
+    color: white; font-weight: 600; font-size: 11px;
+    display: grid; place-items: center; flex-shrink: 0; margin-top: 1px;
+  }
+  .auto-banner strong { color: var(--ink); }
+
+  /* ---------------- tabs row ---------------- */
+  .tabs-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-bottom: 16px;
+  }
+  .tabs { display: flex; gap: 2px; background: var(--paper-2); padding: 4px; border-radius: 8px; }
+  .tab {
+    padding: 8px 14px; border-radius: 5px; font-size: 13px; font-weight: 500;
+    color: var(--muted); cursor: pointer; border: none; background: transparent;
+    display: flex; align-items: center; gap: 8px; transition: all 0.12s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active {
+    background: white; color: var(--navy);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .tab .count {
+    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    background: var(--paper-3); color: var(--muted);
+    padding: 1px 6px; border-radius: 3px;
+  }
+  .tab.active .count { background: var(--navy-soft); color: var(--navy); }
+
+  .actions { display: flex; gap: 10px; align-items: center; }
+  .search {
+    width: 200px; padding: 8px 12px; border: 1px solid var(--rule);
+    border-radius: 6px; font: inherit; font-size: 13px; background: white; color: var(--ink);
+  }
+  .search::placeholder { color: var(--muted-2); }
+  .search:focus { outline: none; border-color: var(--navy); }
+  .bu-filter {
+    padding: 8px 12px; border: 1px solid var(--rule); border-radius: 6px;
+    font: inherit; font-size: 13px; background: white; color: var(--ink);
+  }
+
+  .btn {
+    font: inherit; font-weight: 500; font-size: 13px;
+    padding: 9px 16px; border-radius: 6px;
+    border: 1px solid transparent; cursor: pointer; transition: all 0.12s;
+  }
+  .btn-primary { background: var(--navy); color: white; }
+  .btn-primary:hover { background: var(--navy-dark); }
+  .btn-secondary { background: white; color: var(--ink); border-color: var(--rule); }
+  .btn-secondary:hover { border-color: var(--rule-2); background: var(--paper-2); }
+  .btn-danger { background: var(--danger); color: white; }
+  .btn-danger:hover { background: #92281f; }
+  .btn-link {
+    background: transparent; color: var(--navy);
+    padding: 6px 8px; font-size: 12px; font-weight: 500;
+  }
+  .btn-link:hover { text-decoration: underline; }
+  .btn-link.danger { color: var(--danger); }
+
+  /* ---------------- table ---------------- */
+  .table-wrap {
+    background: white; border: 1px solid var(--rule);
+    border-radius: 10px; overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: var(--paper-2); color: var(--muted);
+    font-weight: 500; font-size: 11px; letter-spacing: 0.06em;
+    text-transform: uppercase; text-align: left;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule);
+  }
+  tbody td {
+    padding: 13px 16px; border-bottom: 1px solid var(--rule); vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--paper); }
+  tbody tr.inactive td { color: var(--muted-2); }
+  tbody tr.inactive .name-main { color: var(--muted); }
+
+  .name { display: flex; align-items: center; gap: 12px; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--navy); color: white;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 600;
+    font-family: "Fraunces", serif; flex-shrink: 0;
+  }
+  .avatar.alt { background: var(--orange); }
+  .avatar.muted { background: var(--muted-2); }
+  .avatar.energy { background: var(--bu-energy); }
+  .name-main { font-weight: 500; color: var(--ink); font-size: 14px; }
+  .name-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+  .joined-date, .left-date {
+    font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted);
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 12px;
+    font-size: 11px; font-weight: 500;
+  }
+  .badge-active { background: var(--success-soft); color: var(--success); }
+  .badge-inactive { background: var(--paper-3); color: var(--muted); }
+  .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .bu-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 500;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .bu-tag.steel { background: var(--bu-steel-soft); color: var(--bu-steel); }
+  .bu-tag.energy { background: var(--bu-energy-soft); color: var(--bu-energy); }
+
+  .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+  .empty-state {
+    padding: 40px 20px; text-align: center; color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ---------------- modal ---------------- */
+  .scrim {
+    position: fixed; inset: 0; background: rgba(26, 31, 44, 0.45);
+    display: none; align-items: flex-start; justify-content: center;
+    padding: 60px 20px; z-index: 100; overflow-y: auto;
+  }
+  .scrim.open { display: flex; }
+  .modal {
+    background: var(--paper); border-radius: 12px;
+    width: 100%; max-width: 540px; overflow: hidden;
+    box-shadow: 0 30px 60px -10px rgba(0,0,0,0.3);
+  }
+  .modal-head { padding: 22px 26px 16px; border-bottom: 1px solid var(--rule); }
+  .modal-title {
+    font-family: "Fraunces", serif; font-size: 22px; font-weight: 500;
+    margin: 0; color: var(--ink); letter-spacing: -0.01em;
+  }
+  .modal-title .km { font-size: 16px; color: var(--muted); margin-left: 8px; }
+  .modal-sub { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  .modal-body { padding: 22px 26px; }
+  .modal-foot {
+    padding: 16px 26px; border-top: 1px solid var(--rule);
+    display: flex; justify-content: flex-end; gap: 8px; background: white;
+  }
+
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block; font-size: 12px; font-weight: 500;
+    color: var(--ink-2); margin-bottom: 6px;
+  }
+  .field label .opt { color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--rule);
+    border-radius: 6px; font: inherit; font-size: 13px;
+    background: white; color: var(--ink);
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline: none; border-color: var(--navy);
+  }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field-locked {
+    background: var(--paper-2); padding: 9px 12px; border-radius: 6px;
+    font-size: 13px; color: var(--ink-2); border: 1px solid var(--rule);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .field-locked .lock-note {
+    font-size: 11px; color: var(--muted); font-family: "JetBrains Mono", monospace;
+  }
+
+  /* ---------------- reassignment ---------------- */
+  .reassign {
+    background: var(--orange-soft); border-left: 3px solid var(--orange);
+    border-radius: 4px; padding: 14px 16px; margin-top: 10px;
+  }
+  .reassign-title {
+    font-size: 12px; font-weight: 600; color: var(--ink);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
+  }
+  .reassign-item {
+    display: grid; grid-template-columns: 1fr 180px; gap: 12px;
+    align-items: center; padding: 8px 0;
+    border-top: 1px solid rgba(255,101,14,0.18); font-size: 12px;
+  }
+  .reassign-item:first-of-type { border-top: none; }
+  .reassign-label strong {
+    font-family: "JetBrains Mono", monospace; color: var(--orange);
+    font-size: 13px; margin-right: 6px;
+  }
+  .reassign-item select {
+    width: 100%; padding: 6px 10px; border: 1px solid var(--rule);
+    border-radius: 4px; font: inherit; font-size: 12px; background: white;
+  }
+
+  .footnote {
+    margin-top: 32px; font-size: 11px; color: var(--muted-2);
+    text-align: center; font-family: "JetBrains Mono", monospace;
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">Hire with Medhā</div>
+        <div class="brand-sub">Guided By Wisdom · Driven By People.</div>
+      </div>
+    </div>
+
+    <div class="persona-bar">
+      <span class="persona-label">VIEW AS (sketch)</span>
+      <div class="persona-toggle">
+        <button class="persona-btn active" data-persona="tim" onclick="setPersona('tim')">
+          Tim<small>HRBP · Steel</small>
+        </button>
+        <button class="persona-btn" data-persona="socheata" onclick="setPersona('socheata')">
+          Socheata<small>Head of TA · Group</small>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE HEAD -->
+  <h1 class="page-title">Employees<span class="km">បុគ្គលិក</span></h1>
+  <p class="page-sub">
+    The single source of truth for who works at ISI Group. Powers every requester,
+    approver, and recruiter dropdown across the platform.
+  </p>
+
+  <!-- SCOPE CONTEXT -->
+  <div class="scope-ctx">
+    <div class="scope-left">
+      <span id="scope-pill" class="scope-pill steel"><span class="dot"></span>ISI STEEL</span>
+      <span id="scope-text" class="scope-text">
+        Showing employees in <strong>ISI Steel</strong> only — your assigned business unit.
+      </span>
+    </div>
+    <div id="scope-bu-filter" style="display:none">
+      <select class="bu-filter" onchange="renderRows(currentTab)">
+        <option value="all">All BUs (2)</option>
+        <option value="STEEL">ISI Steel</option>
+        <option value="ENERGY">ISI Energy</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- AUTO-CREATE BANNER -->
+  <div class="auto-banner">
+    <div class="icon">i</div>
+    <div>
+      <strong>New hires are auto-added.</strong> When an application moves to
+      <em>Hired</em>, the candidate is added here automatically — assigned to the
+      BU of the requisition. You only need to add people by hand for backfills,
+      transfers, or non-recruited additions.
+    </div>
+  </div>
+
+  <!-- TABS + ACTIONS -->
+  <div class="tabs-row">
+    <div class="tabs">
+      <button class="tab active" data-tab="all" onclick="setTab('all')">All <span class="count" id="count-all">18</span></button>
+      <button class="tab" data-tab="active" onclick="setTab('active')">Active <span class="count" id="count-active">17</span></button>
+      <button class="tab" data-tab="inactive" onclick="setTab('inactive')">Inactive <span class="count" id="count-inactive">1</span></button>
+    </div>
+    <div class="actions">
+      <input type="text" class="search" placeholder="Search by name…" />
+      <button class="btn btn-secondary" onclick="alert('Bulk upload via Excel — to be wired')">Bulk upload</button>
+      <button class="btn btn-primary" onclick="openAddModal()">+ Add Employee</button>
+    </div>
+  </div>
+
+  <!-- TABLE -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 28%">Name</th>
+          <th style="width: 12%" id="bu-col" class="bu-col-hidden">BU</th>
+          <th style="width: 18%">Function</th>
+          <th style="width: 16%">Role</th>
+          <th style="width: 12%">Joined</th>
+          <th style="width: 8%">Status</th>
+          <th style="width: 10%; text-align: right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="employee-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="footnote">SKETCH v2 · v36 BU scoping + employee_lifecycle · navy #00338d / orange #ff650e</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ADD MODAL -->
+<!-- ============================================================ -->
+<div class="scrim" id="add-scrim">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 class="modal-title">Add Employee<span class="km">បន្ថែមបុគ្គលិក</span></h2>
+      <p class="modal-sub">For backfills, transfers, or anyone hired outside the platform.</p>
+    </div>
+    <div class="modal-body">
+
+      <!-- BU field — locked for Tim, picker for Socheata -->
+      <div class="field">
+        <label>Business Unit</label>
+        <div id="bu-locked" class="field-locked">
+          <span><strong>ISI Steel</strong></span>
+          <span class="lock-note">scoped to your BU</span>
+        </div>
+        <select id="bu-picker" style="display:none">
+          <option value="STEEL">ISI Steel</option>
+          <option value="ENERGY">ISI Energy</option>
+        </select>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Name (English)</label>
+          <input type="text" placeholder="e.g. Sok Dara" />
+        </div>
+        <div class="field">
+          <label>Name (Khmer) <span class="opt">optional</span></label>
+          <input type="text" class="km" placeholder="ឧ. សុក ដារ៉ា" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Email <span class="opt">required only if they need to log in</span></label>
+        <input type="email" placeholder="dara.sok@isigroup.com" />
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Function</label>
+          <select>
+            <option>Operations</option>
+            <option>Finance</option>
+            <option>Commercial</option>
+            <option>People &amp; Culture</option>
+            <option>Engineering</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select>
+            <option>Team Member</option>
+            <option>Supervisor</option>
+            <option>Manager</option>
+            <option>Function Head</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Reports to</label>
+          <select>
+            <option>— select —</option>
+            <option>Heng Sonal</option>
+            <option>Yin Chanvicheaneath</option>
+            <option>Samnang</option>
+            <option>Yong</option>
+            <option>Mengchhuon</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Joined date</label>
+          <input type="date" value="2026-05-05" />
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModals()">Cancel</button>
+      <button class="btn btn-primary" onclick="closeModals(); alert('Employee added (sketch)')">Add Employee</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- DEACTIVATE MODAL -->
+<!-- ============================================================ -->
+<div class="scrim" id="deact-scrim">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 class="modal-title">Deactivate Employee<span class="km">បិទដំណើរការ</span></h2>
+      <p class="modal-sub">Mark <strong id="deact-name">Chanlida</strong> as no longer with the company.</p>
+    </div>
+    <div class="modal-body">
+
+      <div class="field-row">
+        <div class="field">
+          <label>Reason</label>
+          <select>
+            <option value="resignation">Resignation</option>
+            <option value="termination">Termination</option>
+            <option value="end_of_contract">End of contract</option>
+            <option value="transfer">Transfer</option>
+            <option value="retirement">Retirement</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Last working day</label>
+          <input type="date" value="2026-05-31" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Notes <span class="opt">optional</span></label>
+        <textarea rows="2" placeholder="Internal context — handover details, exit notes, etc."></textarea>
+      </div>
+
+      <div class="reassign">
+        <div class="reassign-title">⚠ Open items need reassignment</div>
+
+        <div class="reassign-item">
+          <div class="reassign-label">
+            <strong>4</strong> open applications as recruiter
+          </div>
+          <select>
+            <option>— reassign to —</option>
+            <option>Chanpiyuth</option>
+            <option>Kimsros</option>
+            <option>Kanhaly</option>
+            <option>Vanna</option>
+            <option>Ravy</option>
+            <option>Lina</option>
+            <option>← back to Socheata's queue</option>
+          </select>
+        </div>
+
+        <div class="reassign-item">
+          <div class="reassign-label">
+            <strong>2</strong> draft requisitions in progress
+          </div>
+          <select>
+            <option>— reassign to —</option>
+            <option>Chanpiyuth</option>
+            <option>Kimsros</option>
+            <option>Kanhaly</option>
+            <option>Vanna</option>
+            <option>Ravy</option>
+            <option>Lina</option>
+          </select>
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModals()">Cancel</button>
+      <button class="btn btn-danger" onclick="closeModals(); alert('Deactivated and reassigned (sketch)')">Deactivate &amp; Reassign</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- sample data (now BU-tagged) ----
+  // bu: STEEL | ENERGY ; recruiters/head_ta/group_ceo/admin are group-scoped → tagged GROUP
+  const employees = [
+    // ISI Steel
+    { initial: "T",  name: "Tim",                 fn: "People & Culture", role: "HRBP",          bu: "STEEL",  joined: "2023-04-12", status: "active", alt: false },
+    { initial: "HS", name: "Heng Sonal",          fn: "Operations",       role: "Function Head", bu: "STEEL",  joined: "2021-02-15", status: "active" },
+    { initial: "YC", name: "Yin Chanvicheaneath", fn: "Finance",          role: "Function Head", bu: "STEEL",  joined: "2020-11-03", status: "active" },
+    { initial: "Sm", name: "Samnang",             fn: "Commercial",       role: "Function Head", bu: "STEEL",  joined: "2022-01-20", status: "active" },
+    { initial: "Yg", name: "Yong",                fn: "Engineering",      role: "Function Head", bu: "STEEL",  joined: "2021-07-08", status: "active" },
+    { initial: "Mc", name: "Mengchhuon",          fn: "Operations",       role: "Function Head", bu: "STEEL",  joined: "2023-03-14", status: "active" },
+    { initial: "Nr", name: "Narith",              fn: "Operations",       role: "Manager",       bu: "STEEL",  joined: "2022-05-09", status: "active" },
+    { initial: "Km", name: "Kangmuy",             fn: "Commercial",       role: "Manager",       bu: "STEEL",  joined: "2023-11-27", status: "active" },
+    { initial: "SS", name: "Sor Sokpheng",        fn: "Finance",          role: "Supervisor",    bu: "STEEL",  joined: "2024-08-14", status: "active" },
+    { initial: "KS", name: "Kang Simchheav",      fn: "Engineering",      role: "Manager",       bu: "STEEL",  joined: "2024-12-02", status: "active" },
+    { initial: "Sc", name: "Sokha Chea",          fn: "Operations",       role: "Team Member",   bu: "STEEL",  joined: "2023-02-01", status: "inactive", left: "2025-11-15", reason: "Resignation" },
+
+    // ISI Energy (illustrative second BU)
+    { initial: "Mn", name: "Marina Norodom",      fn: "Operations",       role: "Function Head", bu: "ENERGY", joined: "2024-04-10", status: "active" },
+    { initial: "Pl", name: "Pisey Long",          fn: "Finance",          role: "Manager",       bu: "ENERGY", joined: "2024-09-22", status: "active" },
+    { initial: "Sk", name: "Sokun Vichea",        fn: "Engineering",      role: "Supervisor",    bu: "ENERGY", joined: "2025-03-15", status: "active" },
+    { initial: "Pm", name: "Pisey Mom",           fn: "Commercial",       role: "Supervisor",    bu: "ENERGY", joined: "2022-06-13", status: "inactive", left: "2024-08-30", reason: "End of contract" },
+
+    // Group-scoped (visible to all BUs)
+    { initial: "S",  name: "Socheata",            fn: "People & Culture", role: "Head of TA",    bu: "GROUP",  joined: "2022-09-01", status: "active", alt: true  },
+    { initial: "KL", name: "Kang Leng",           fn: "Executive",        role: "Group CEO",     bu: "GROUP",  joined: "2018-01-05", status: "active" },
+    { initial: "Cl", name: "Chanlida",            fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2024-01-15", status: "active", alt: true },
+    { initial: "Cp", name: "Chanpiyuth",          fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2024-03-01", status: "active", alt: true },
+    { initial: "Ks", name: "Kimsros",             fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2023-08-22", status: "active", alt: true },
+    { initial: "Kn", name: "Kanhaly",             fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2024-06-10", status: "active", alt: true },
+    { initial: "Vn", name: "Vanna",               fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2025-02-03", status: "active", alt: true },
+    { initial: "Rv", name: "Ravy",                fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2025-04-18", status: "active", alt: true },
+    { initial: "Ln", name: "Lina",                fn: "People & Culture", role: "Recruiter",     bu: "GROUP",  joined: "2025-09-01", status: "active", alt: true },
+  ];
+
+  let currentPersona = "tim";
+  let currentTab = "all";
+
+  // ---- persona-aware filtering ----
+  function visibleEmployees() {
+    if (currentPersona === "tim") {
+      // BU-scoped to Steel; she also sees group-scoped people that are part of her ecosystem
+      return employees.filter(e => e.bu === "STEEL" || e.bu === "GROUP");
+    } else {
+      // Socheata = group-scoped, sees everything
+      const buFilter = document.querySelector(".bu-filter")?.value || "all";
+      if (buFilter === "all") return employees;
+      return employees.filter(e => e.bu === buFilter || e.bu === "GROUP");
+    }
+  }
+
+  // ---- render ----
+  function renderRows(filter) {
+    currentTab = filter || currentTab;
+    const tbody = document.getElementById("employee-rows");
+    let list = visibleEmployees();
+    if (currentTab !== "all") list = list.filter(e => e.status === currentTab);
+
+    // counts
+    const visible = visibleEmployees();
+    document.getElementById("count-all").textContent      = visible.length;
+    document.getElementById("count-active").textContent   = visible.filter(e => e.status === "active").length;
+    document.getElementById("count-inactive").textContent = visible.filter(e => e.status === "inactive").length;
+
+    const showBuCol = currentPersona === "socheata";
+    document.getElementById("bu-col").style.display = showBuCol ? "" : "none";
+
+    if (list.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="${showBuCol ? 7 : 6}" class="empty-state">No employees in this view.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = list.map(e => {
+      const inactive = e.status === "inactive";
+      const avatarClass = inactive
+        ? "avatar muted"
+        : (e.bu === "ENERGY" ? "avatar energy" : (e.alt ? "avatar alt" : "avatar"));
+      const dateCell = inactive
+        ? `<span class="left-date">left ${e.left}</span><div style="font-size:10px;color:var(--muted-2);margin-top:2px">${e.reason}</div>`
+        : `<span class="joined-date">${e.joined}</span>`;
+      const badge = inactive
+        ? `<span class="badge badge-inactive"><span class="badge-dot"></span>Inactive</span>`
+        : `<span class="badge badge-active"><span class="badge-dot"></span>Active</span>`;
+      const actions = inactive
+        ? `<button class="btn btn-link" onclick="alert('Reactivate (sketch)')">Reactivate</button>`
+        : `<button class="btn btn-link" onclick="alert('Edit (sketch)')">Edit</button>
+           <button class="btn btn-link danger" onclick="openDeactModal('${e.name}')">Deactivate</button>`;
+
+      const buCell = showBuCol
+        ? `<td>${e.bu === "STEEL" ? '<span class="bu-tag steel">ISI STEEL</span>'
+              : e.bu === "ENERGY" ? '<span class="bu-tag energy">ISI ENERGY</span>'
+              : '<span class="bu-tag" style="background:var(--orange-soft);color:var(--orange)">GROUP</span>'}</td>`
+        : "";
+
+      return `
+        <tr class="${inactive ? 'inactive' : ''}">
+          <td>
+            <div class="name">
+              <div class="${avatarClass}">${e.initial}</div>
+              <div>
+                <div class="name-main">${e.name}</div>
+                <div class="name-sub">${e.role.toLowerCase()}</div>
+              </div>
+            </div>
+          </td>
+          ${buCell}
+          <td>${e.fn}</td>
+          <td>${e.role}</td>
+          <td>${dateCell}</td>
+          <td>${badge}</td>
+          <td><div class="row-actions">${actions}</div></td>
+        </tr>`;
+    }).join("");
+  }
+
+  // ---- persona switching ----
+  function setPersona(p) {
+    currentPersona = p;
+    document.querySelectorAll(".persona-btn").forEach(b => {
+      b.classList.toggle("active", b.dataset.persona === p);
+    });
+
+    const pill = document.getElementById("scope-pill");
+    const text = document.getElementById("scope-text");
+    const filter = document.getElementById("scope-bu-filter");
+    const buLocked = document.getElementById("bu-locked");
+    const buPicker = document.getElementById("bu-picker");
+
+    if (p === "tim") {
+      pill.className = "scope-pill steel";
+      pill.innerHTML = '<span class="dot"></span>ISI STEEL';
+      text.innerHTML = 'Showing employees in <strong>ISI Steel</strong> only — your assigned business unit.';
+      filter.style.display = "none";
+      buLocked.style.display = "";
+      buPicker.style.display = "none";
+    } else {
+      pill.className = "scope-pill group";
+      pill.innerHTML = '<span class="dot"></span>GROUP';
+      text.innerHTML = 'Showing employees across <strong>all business units</strong> — group-level access.';
+      filter.style.display = "";
+      buLocked.style.display = "none";
+      buPicker.style.display = "";
+    }
+    renderRows(currentTab);
+  }
+
+  // ---- tab switching ----
+  function setTab(t) {
+    currentTab = t;
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelector(`.tab[data-tab="${t}"]`).classList.add("active");
+    renderRows(t);
+  }
+
+  // ---- modals ----
+  function openAddModal() { document.getElementById("add-scrim").classList.add("open"); }
+  function openDeactModal(name) {
+    document.getElementById("deact-name").textContent = name;
+    document.getElementById("deact-scrim").classList.add("open");
+  }
+  function closeModals() {
+    document.querySelectorAll(".scrim").forEach(s => s.classList.remove("open"));
+  }
+  document.querySelectorAll(".scrim").forEach(s => {
+    s.addEventListener("click", e => { if (e.target === s) closeModals(); });
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeModals(); });
+
+  // ---- init ----
+  setPersona("tim");
+</script>
+
+</body>
+</html>
