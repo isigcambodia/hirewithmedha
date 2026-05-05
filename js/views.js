@@ -4580,6 +4580,20 @@ function _empFunctionName(emp) {
   return state.deptMaps.byId?.[emp.function_id]?.name || '—';
 }
 
+function _empDepartmentName(emp) {
+  if (!emp?.department_id) return '—';
+  return state.deptMaps.byId?.[emp.department_id]?.name || '—';
+}
+
+// line_manager_code is a text reference to another employee's employee_code.
+// Resolve to that employee's display name; fall back to the raw code if the
+// supervisor's row isn't loaded.
+function _empSupervisorName(emp) {
+  if (!emp?.line_manager_code) return '—';
+  const sup = state.employeeMaps.byCode?.[emp.line_manager_code];
+  return sup?.name_en || sup?.name_kh || emp.line_manager_code;
+}
+
 // Apply the persona + BU-filter + status-tab + search pipeline. Returns a
 // filtered slice of state.employeeMaps.list for current UI state.
 function _filteredEmployees() {
@@ -4681,14 +4695,17 @@ function renderEmployees() {
       <th>${t('emp_th_name') || 'Name'}</th>
       ${showBuCol ? `<th>${t('emp_th_bu') || 'BU'}</th>` : ''}
       <th>${t('emp_th_function') || 'Function'}</th>
+      <th>${t('emp_th_department') || 'Department'}</th>
+      <th>${t('emp_th_section') || 'Section'}</th>
       <th>${t('emp_th_role') || 'Role'}</th>
+      <th>${t('emp_th_supervisor') || 'Supervisor'}</th>
       <th>${t('emp_th_joined') || 'Joined'}</th>
       <th>${t('emp_th_status') || 'Status'}</th>
     </tr></thead>
   `;
 
   const rowsHtml = list.length === 0
-    ? `<tr><td colspan="${showBuCol ? 6 : 5}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
+    ? `<tr><td colspan="${showBuCol ? 9 : 8}" class="empty" style="padding: 2rem; text-align:center;"><div class="empty-title">${t('emp_empty_title') || 'No employees in this view.'}</div><div class="empty-desc">${t('emp_empty_desc') || 'Try clearing the search or switching tabs.'}</div></td></tr>`
     : list.map(e => {
         const inactive = e.status === 'Inactive';
         const rowStyle = inactive ? 'opacity: 0.65;' : '';
@@ -4709,7 +4726,10 @@ function renderEmployees() {
             </td>
             ${showBuCol ? `<td>${_empBuTag(e)}</td>` : ''}
             <td>${esc(_empFunctionName(e))}</td>
+            <td>${esc(_empDepartmentName(e))}</td>
+            <td>${esc(e.section || '—')}</td>
             <td>${roleLabel}</td>
+            <td>${esc(_empSupervisorName(e))}</td>
             <td>${dateCell}</td>
             <td>${statusBadgeHtml}</td>
           </tr>
