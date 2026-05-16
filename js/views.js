@@ -35,6 +35,45 @@ import {
   statusBadge, renderResourcesBlock, openModal, closeModal, renderReqRow,
 } from './utils.js';
 
+// Interview-panel picker selection for the feedback modal. Holds employee
+// UUIDs while the modal is open; reset each time addFeedback() runs and
+// flushed into the feedback record on submit.
+let _fbPanelIds = [];
+
+function renderFbPanelChips(candId) {
+  if (!_fbPanelIds.length) {
+    return `<span class="text-xs text-muted">${t('hint_no_panel') || 'No panel members added yet'}</span>`;
+  }
+  return _fbPanelIds.map(id =>
+    `<span class="badge" style="display:inline-flex;align-items:center;gap:0.35rem;">${esc(getUserName(id))}` +
+    `<button type="button" aria-label="Remove" onclick="removePanelMember('${escJs(candId)}','${escJs(id)}')" ` +
+    `style="border:none;background:none;cursor:pointer;font-weight:bold;line-height:1;padding:0;">×</button></span>`
+  ).join('');
+}
+
+function addPanelMember(candId) {
+  const input = document.getElementById('fbPanelInput');
+  if (!input) return;
+  const typed = input.value.trim();
+  if (!typed) return;
+  const emps = getActiveEmployeesInScope();
+  const labelFor = e => `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+  const emp = emps.find(e => labelFor(e) === typed)
+           || emps.find(e => (e.name_en || '').toLowerCase() === typed.toLowerCase());
+  if (!emp) { alert('Please pick a name from the list'); return; }
+  if (!_fbPanelIds.includes(emp.id)) _fbPanelIds.push(emp.id);
+  input.value = '';
+  const chips = document.getElementById('fbPanelChips');
+  if (chips) chips.innerHTML = renderFbPanelChips(candId);
+  input.focus();
+}
+
+function removePanelMember(candId, empId) {
+  _fbPanelIds = _fbPanelIds.filter(id => id !== empId);
+  const chips = document.getElementById('fbPanelChips');
+  if (chips) chips.innerHTML = renderFbPanelChips(candId);
+}
+
 // ============================================================
 // HEADER
 // ============================================================
@@ -3856,19 +3895,33 @@ async function submitInterview(candId) {
 
 function addFeedback(candId) {
   const c = state.candidates.find(x => x.id === candId);
-  const r = state.requisitions.find(x => x.id === c.reqId);
+  // Seed the panel from any interviewers attached to a scheduled interview.
+  _fbPanelIds = (c.interview && Array.isArray(c.interview.interviewers)
+    ? c.interview.interviewers.slice() : []).filter(Boolean);
+  const emps = getActiveEmployeesInScope();
   openModal(`
     <div class="modal-header"><h2>${t('modal_int_feedback')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
-    <div class="form-grid-2">
-      <div class="form-group"><label class="required">${t('lbl_interviewer')}</label><select id="fbInt">${(c.interview ? c.interview.interviewers : [r.hiringManagerId]).map(id => `<option value="${id}">${getUserName(id)}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="required">${t('lbl_rating')}</label><select id="fbRate"><option>Strong Yes</option><option>Yes</option><option>Maybe</option><option>No</option></select></div>
+    <datalist id="fbPanelOptions">
+      ${emps.map(e => {
+        const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+        return `<option value="${esc(label)}"></option>`;
+      }).join('')}
+    </datalist>
+    <div class="form-group">
+      <label class="required">${t('lbl_interview_panel')}</label>
+      <div class="flex-gap" style="align-items:flex-start;">
+        <input type="text" id="fbPanelInput" list="fbPanelOptions" placeholder="${t('ph_type_name') || 'Type to search by name…'}" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();addPanelMember('${escJs(candId)}');}">
+        <button type="button" class="btn btn-secondary" title="Add to panel" onclick="addPanelMember('${escJs(candId)}')">+</button>
+      </div>
+      <div id="fbPanelChips" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;">${renderFbPanelChips(candId)}</div>
     </div>
+    <div class="form-group"><label class="required">${t('lbl_rating')}</label><select id="fbRate"><option>Strong Yes</option><option>Yes</option><option>Maybe</option><option>No</option></select></div>
     <div class="form-group"><label class="required">${t('btn_feedback')}</label><textarea id="fbNotes" rows="4"></textarea></div>
-    ${c.feedback.length > 0 ? `<div style="background: var(--paper); padding: 0.85rem; border-radius: var(--radius); margin-bottom: 1rem;"><h3 style="margin-bottom: 0.5rem;">${t('sec_prev_feedback')}</h3>${c.feedback.map(f => `<div style="padding: 0.5rem 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem;"><strong>${getUserName(f.interviewerId)}</strong> · <span class="badge ${f.rating === 'Strong Yes' || f.rating === 'Yes' ? 'badge-success' : f.rating === 'No' ? 'badge-danger' : 'badge-warning'}">${f.rating}</span><br><span class="text-sm">${f.notes}</span></div>`).join('')}</div>` : ''}
+    ${c.feedback.length > 0 ? `<div style="background: var(--paper); padding: 0.85rem; border-radius: var(--radius); margin-bottom: 1rem;"><h3 style="margin-bottom: 0.5rem;">${t('sec_prev_feedback')}</h3>${c.feedback.map(f => { const who = (f.panelIds && f.panelIds.length) ? f.panelIds.map(getUserName).join(', ') : getUserName(f.interviewerId); return `<div style="padding: 0.5rem 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem;"><strong>${esc(who)}</strong> · <span class="badge ${f.rating === 'Strong Yes' || f.rating === 'Yes' ? 'badge-success' : f.rating === 'No' ? 'badge-danger' : 'badge-warning'}">${f.rating}</span><br><span class="text-sm">${f.notes}</span></div>`; }).join('')}</div>` : ''}
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
-      <button class="btn btn-primary" onclick="submitFeedback('${candId}')">${t('btn_save_feedback')}</button>
+      <button class="btn btn-primary" onclick="submitFeedback('${escJs(candId)}')">${t('btn_save_feedback')}</button>
     </div>
   `);
 }
@@ -3876,8 +3929,17 @@ function addFeedback(candId) {
 async function submitFeedback(candId) {
   const c = state.candidates.find(x => x.id === candId);
   const notes = document.getElementById('fbNotes').value.trim();
+  if (_fbPanelIds.length === 0) { alert('Add at least one interview panel member'); return; }
   if (!notes) { alert('Notes required'); return; }
-  c.feedback.push({ interviewerId: document.getElementById('fbInt').value, rating: document.getElementById('fbRate').value, notes, submittedAt: new Date().toISOString() });
+  c.feedback.push({
+    panelIds: _fbPanelIds.slice(),
+    // Keep the legacy single-interviewer field populated for any older code path.
+    interviewerId: _fbPanelIds[0] || null,
+    rating: document.getElementById('fbRate').value,
+    notes,
+    submittedAt: new Date().toISOString()
+  });
+  _fbPanelIds = [];
   await persistCandidateChange(c, null);
 }
 
@@ -5892,6 +5954,8 @@ export {
   viewCandidate,
   editCandidate,
   addFeedback,
+  addPanelMember,
+  removePanelMember,
   advanceInterviewStep,
   regressInterviewStep,
   confirmRegressInterviewStep,
