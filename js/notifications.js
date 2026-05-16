@@ -1,31 +1,27 @@
 // ============================================================
 // TELEGRAM NOTIFICATIONS — client side
 // ============================================================
-// IMPORTANT: the backend (DB schema, RPCs, Edge Functions, Database
-// Webhook) is ALREADY DEPLOYED on Supabase project uwaamlyvvzuhoznlrbhz.
-// This file is written to match that deployed contract exactly — do not
-// "fix" it to some other shape without checking the live DB. The
-// contract is captured in docs/v41_telegram_contract.md.
+// The backend (DB schema, RPCs, Edge Functions, Database Webhook) is
+// ALREADY DEPLOYED on Supabase project uwaamlyvvzuhoznlrbhz. This file
+// matches that deployed contract exactly — see
+// docs/v41_telegram_contract.md. Do not run any SQL/Edge Function from
+// this repo; there is none.
 //
-//   RPCs (SECURITY DEFINER, callable by authenticated):
-//     telegram_mint_link_token()            -> link code (text)
-//     telegram_unlink()                     -> void
-//     telegram_toggle_notifications(enabled) -> void
+//   Link code:  supabase.functions.invoke('telegram-link-code')
+//               -> { code, bot_username, deep_link, instructions,
+//                    already_linked, linked_at }
+//   Disconnect: rpc('telegram_unlink')
+//   Toggle:     rpc('telegram_toggle_notifications', { enabled })
+//   Status:     profiles.telegram_chat_id / _username / _linked_at /
+//               _notifications_enabled  (polled every 3s while linking)
 //
-//   notification_queue columns the client writes:
-//     tenant_id            uuid
-//     recipient_profile_id uuid   (== profiles.id == tenant_members.user_id)
-//     event_type           text   (see EVENT_* below)
-//     event_data           jsonb  (rendered into a message by telegram-notify)
+//   notification_queue insert (one row per recipient):
+//     tenant_id, recipient_profile_id, event_type, event_data(jsonb)
 //
-//   profiles columns (read for status):
-//     telegram_chat_id, telegram_username, telegram_notifications_enabled
-//
-// Two responsibilities: (1) the connect/disconnect/toggle UI, and (2)
-// dispatchWorkflowNotification(), called from persistReqChange /
-// persistCandidateChange after a successful save. Everything is
-// best-effort: a notification failure must never break the workflow
-// action that triggered it.
+// Connect/UI is a 3-state machine (not linked → pending → linked) with
+// auto-polling. dispatchWorkflowNotification() (called from
+// persistReqChange / persistCandidateChange) is best-effort and never
+// blocks the workflow action.
 
 import { sb, TELEGRAM_BOT_USERNAME } from './config.js';
 import { state } from './state.js';
@@ -33,7 +29,22 @@ import { esc } from './helpers.js';
 import { openModal, closeModal, getUserName } from './utils.js';
 import { toast } from './storage.js';
 
-const tg = { linked: false, username: null, enabled: true, loaded: false };
+const LINK_FUNCTION = 'telegram-link-code';
+const POLL_MS = 3000;
+const POLL_WINDOW_MS = 120000; // stop auto-polling after 2 min
+
+const tg = {
+  linked: false,
+  username: null,
+  enabled: true,
+  linkedAt: null,
+  loaded: false,
+};
+
+// Active pending-link attempt (State 2), or null.
+let pending = null;        // { code, deepLink, instructions, expired }
+let pollTimer = null;
+let pollDeadline = 0;
 
 export async function loadTelegramStatus() {
   try {
@@ -41,11 +52,12 @@ export async function loadTelegramStatus() {
     if (!uid) return;
     const { data } = await sb
       .from('profiles')
-      .select('telegram_chat_id, telegram_username, telegram_notifications_enabled')
+      .select('telegram_chat_id, telegram_username, telegram_linked_at, telegram_notifications_enabled')
       .eq('id', uid)
       .single();
     tg.linked = !!data?.telegram_chat_id;
     tg.username = data?.telegram_username || null;
+    tg.linkedAt = data?.telegram_linked_at || null;
     tg.enabled = data?.telegram_notifications_enabled !== false;
     tg.loaded = true;
   } catch (e) {
@@ -53,8 +65,13 @@ export async function loadTelegramStatus() {
   }
 }
 
+function fmtDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(); } catch { return String(iso); }
+}
+
 // ------------------------------------------------------------
-// Connection UI
+// 3-state view
 // ------------------------------------------------------------
 export function renderNotificationsView() {
   const main = document.getElementById('mainView');
@@ -62,105 +79,202 @@ export function renderNotificationsView() {
 
   const botConfigured = !!TELEGRAM_BOT_USERNAME && TELEGRAM_BOT_USERNAME !== 'CHANGE_ME';
 
-  const statusRow = tg.linked
-    ? `<div style="display:flex; align-items:center; gap:0.5rem; color: var(--brand-ironclad, #2d7a4f); font-weight:600;">
-         <span style="font-size:18px;">✅</span>
-         <span>Connected${tg.username ? ' as ' + esc(tg.username) : ''}</span>
-       </div>`
-    : `<div style="display:flex; align-items:center; gap:0.5rem; color: var(--ink-3, #73726c);">
-         <span style="font-size:18px;">○</span><span>Not connected</span>
-       </div>`;
-
-  const actions = tg.linked
-    ? `<div style="display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center;">
-         <label style="display:flex; align-items:center; gap:0.4rem; font-size:13px; cursor:pointer;">
-           <input type="checkbox" id="tgEnabledToggle" ${tg.enabled ? 'checked' : ''}
-             onchange="toggleTelegramNotifications(this.checked)">
-           Send me notifications
-         </label>
-         <button class="role-btn" onclick="disconnectTelegram()"
-           style="border:1px solid var(--rule-dark); padding:6px 12px; border-radius:6px; cursor:pointer; background:transparent;">
-           Disconnect
-         </button>
-       </div>`
-    : (botConfigured
-        ? `<button class="role-btn" onclick="connectTelegram()"
-             style="background: var(--brand-navy, #011e41); color:#fff; border:none; padding:9px 16px; border-radius:6px; cursor:pointer; font-weight:500;">
-             Connect Telegram
-           </button>`
-        : `<div style="background: var(--danger-bg,#fdecec); color: var(--danger,#b91c1c); padding:0.7rem 0.9rem; border-radius:6px; font-size:13px; border-left:3px solid var(--danger,#b91c1c);">
-             Telegram bot not configured. Set <code>TELEGRAM_BOT_USERNAME</code> in <code>js/config.js</code>.
-           </div>`);
+  let body;
+  if (tg.linked) {
+    body = stateLinked();
+  } else if (pending) {
+    body = statePending();
+  } else if (botConfigured) {
+    body = stateNotLinked();
+  } else {
+    body = `<div style="background: var(--danger-bg,#fdecec); color: var(--danger,#b91c1c); padding:0.7rem 0.9rem; border-radius:6px; font-size:13px; border-left:3px solid var(--danger,#b91c1c);">
+      Telegram bot not configured. Set <code>TELEGRAM_BOT_USERNAME</code> in <code>js/config.js</code>.
+    </div>`;
+  }
 
   main.innerHTML = `
     <div style="max-width: 640px; margin: 1.5rem auto;">
-      <button class="role-btn" onclick="setView('dashboard')"
+      <button class="role-btn" onclick="leaveNotifications()"
         style="border:1px solid var(--rule-dark); padding:5px 12px; border-radius:6px; cursor:pointer; background:transparent; margin-bottom:1.25rem;">
         ← Dashboard
       </button>
       <div style="background: var(--paper,#fff); border:1px solid var(--rule,#e5e3da); border-radius:10px; padding:1.5rem;">
-        <h2 style="margin:0 0 0.4rem; font-size:1.2rem;">Telegram notifications</h2>
-        <p style="margin:0 0 1.25rem; color: var(--ink-3,#73726c); font-size:13.5px; line-height:1.5;">
-          Get a Telegram message the moment something needs you: an approval in your
-          queue, a status change on your requisition, a candidate moving stage, or an
-          interview being scheduled.
+        <h2 style="margin:0 0 0.4rem; font-size:1.2rem;">🔔 Telegram notifications</h2>
+        <p style="margin:0 0 1rem; color: var(--ink-3,#73726c); font-size:13.5px; line-height:1.5;">
+          Get real-time updates on your phone when requisitions are approved or
+          rejected, candidates move stage, and interviews are scheduled.
         </p>
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:0.9rem 0; border-top:1px solid var(--rule,#e5e3da); flex-wrap:wrap;">
-          ${statusRow}
-          ${actions}
+        <ul style="margin:0 0 1.25rem 1.1rem; padding:0; color: var(--ink-3,#73726c); font-size:13px; line-height:1.7;">
+          <li>Requisition approvals &amp; rejections</li>
+          <li>Candidate status updates</li>
+          <li>Interview schedules</li>
+        </ul>
+        <p style="margin:0 0 1.25rem; color: var(--ink-4,#a8a69d); font-size:12px;">
+          You won't be notified about actions you perform yourself.
+        </p>
+        <div style="border-top:1px solid var(--rule,#e5e3da); padding-top:1.1rem;">
+          ${body}
         </div>
       </div>
     </div>`;
 }
 
-// telegram_mint_link_token() may return the code as plain text, a
-// single-row table, or json — be tolerant of all three.
-function extractToken(data) {
-  if (!data) return null;
-  if (typeof data === 'string') return data;
-  if (Array.isArray(data)) {
-    const row = data[0];
-    return typeof row === 'string' ? row : (row?.token || row?.code || null);
-  }
-  return data.token || data.code || null;
+function stateNotLinked() {
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:0.5rem; color: var(--ink-3,#73726c);">
+        <span style="font-size:18px;">○</span><span>Not connected</span>
+      </div>
+      <button class="role-btn" onclick="connectTelegram()"
+        style="background: var(--brand-navy,#011e41); color:#fff; border:none; padding:9px 16px; border-radius:6px; cursor:pointer; font-weight:500;">
+        Connect Telegram
+      </button>
+    </div>`;
 }
 
+function statePending() {
+  const code = esc(pending.code);
+  const deep = esc(pending.deepLink);
+  const expiredBanner = pending.expired
+    ? `<div style="background: var(--warn-bg,#fef5e7); color: var(--warn,#b45309); padding:0.6rem 0.8rem; border-radius:6px; font-size:12.5px; margin:0.9rem 0;">
+         Still waiting? Codes expire after 15 minutes.
+         <button class="role-btn" onclick="connectTelegram()" style="margin-left:0.4rem; border:1px solid currentColor; padding:3px 9px; border-radius:5px; cursor:pointer; background:transparent;">Generate new code</button>
+       </div>`
+    : `<p style="font-size:12.5px; color: var(--ink-3,#73726c); margin:0.9rem 0 0;">⏳ Waiting for confirmation…</p>`;
+
+  return `
+    <h3 style="margin:0 0 0.3rem; font-size:1rem;">Link your account</h3>
+    <p style="color: var(--ink-3,#73726c); font-size:13px; margin:0 0 0.9rem;">
+      Tap the button — Telegram opens our bot, press <b>Start</b> and you're connected.
+    </p>
+    <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.9rem;">
+      <code style="background: var(--rule,#f3f1ea); padding:8px 14px; border-radius:6px; font-size:18px; letter-spacing:2px; user-select:all;">${code}</code>
+      <button class="role-btn" onclick="copyTelegramCode()"
+        style="border:1px solid var(--rule-dark); padding:6px 12px; border-radius:6px; cursor:pointer; background:transparent;">Copy</button>
+    </div>
+    <a href="${deep}" target="_blank" rel="noopener"
+      style="display:inline-block; background: var(--brand-navy,#011e41); color:#fff; text-decoration:none; padding:10px 18px; border-radius:6px; font-weight:500;">
+      📱 Open in Telegram
+    </a>
+    <p style="font-size:12.5px; color: var(--ink-3,#73726c); margin:1rem 0 0;">
+      Or open Telegram, find <b>@${esc(TELEGRAM_BOT_USERNAME)}</b> and send:
+      <code style="background: var(--rule,#f3f1ea); padding:2px 6px; border-radius:4px;">/start ${code}</code>
+    </p>
+    ${expiredBanner}`;
+}
+
+function stateLinked() {
+  return `
+    <div style="display:flex; align-items:center; gap:0.5rem; color: var(--brand-ironclad,#2d7a4f); font-weight:600; margin-bottom:1rem;">
+      <span style="font-size:18px;">✅</span>
+      <span>Connected${tg.username ? ' as ' + esc(tg.username) : ''}${tg.linkedAt ? ' · since ' + esc(fmtDate(tg.linkedAt)) : ''}</span>
+    </div>
+    <label style="display:flex; align-items:center; gap:0.45rem; font-size:13px; cursor:pointer; margin-bottom:1rem;">
+      <input type="checkbox" id="tgEnabledToggle" ${tg.enabled ? 'checked' : ''}
+        onchange="toggleTelegramNotifications(this.checked)">
+      Receive notifications
+    </label>
+    <button class="role-btn" onclick="disconnectTelegram()"
+      style="border:1px solid var(--danger,#b91c1c); color: var(--danger,#b91c1c); padding:6px 14px; border-radius:6px; cursor:pointer; background:transparent;">
+      Disconnect Telegram
+    </button>
+    <p style="font-size:12px; color: var(--ink-4,#a8a69d); margin:0.9rem 0 0;">
+      You can also send <code>/stop</code> to @${esc(TELEGRAM_BOT_USERNAME)} to disconnect.
+    </p>`;
+}
+
+// ------------------------------------------------------------
+// Connect flow + polling
+// ------------------------------------------------------------
 export async function connectTelegram() {
   try {
-    toast('Generating secure link…');
-    const { data, error } = await sb.rpc('telegram_mint_link_token');
+    toast('Generating link code…');
+    const { data, error } = await sb.functions.invoke(LINK_FUNCTION, { body: {} });
     if (error) throw error;
-    const token = extractToken(data);
-    if (!token) throw new Error('no token returned');
+    if (!data || (!data.code && !data.deep_link)) throw new Error('unexpected response');
 
-    const url = `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${encodeURIComponent(token)}`;
-    openModal(`
-      <div style="max-width:460px;">
-        <h3 style="margin:0 0 0.6rem;">Connect Telegram</h3>
-        <p style="color: var(--ink-3,#73726c); font-size:13.5px; line-height:1.5; margin:0 0 1rem;">
-          Tap the button — Telegram opens our bot, press <b>Start</b> and you're
-          connected. This code works once and expires in 15 minutes.
-        </p>
-        <a href="${esc(url)}" target="_blank" rel="noopener"
-          style="display:inline-block; background: var(--brand-navy,#011e41); color:#fff; text-decoration:none; padding:10px 18px; border-radius:6px; font-weight:500;">
-          Open Telegram &amp; connect
-        </a>
-        <p style="font-size:13px; color: var(--ink-3,#73726c); margin:1.1rem 0 0.3rem;">
-          Or message <b>@${esc(TELEGRAM_BOT_USERNAME)}</b> manually:
-        </p>
-        <code style="display:inline-block; background: var(--rule,#f3f1ea); padding:6px 10px; border-radius:5px; font-size:14px; user-select:all;">/start ${esc(token)}</code>
-        <div style="margin-top:1.25rem; text-align:right;">
-          <button class="role-btn" onclick="closeModal(); refreshTelegramAfterConnect()"
-            style="border:1px solid var(--rule-dark); padding:6px 14px; border-radius:6px; cursor:pointer; background:transparent;">
-            Done
-          </button>
-        </div>
-      </div>`);
-    window.open(url, '_blank', 'noopener');
+    if (data.already_linked) {
+      await loadTelegramStatus();
+      tg.linked = true;
+      if (data.linked_at) tg.linkedAt = data.linked_at;
+      pending = null;
+      stopLinkPolling();
+      if (state.currentView === 'notifications') renderNotificationsView();
+      toast('Telegram already connected');
+      return;
+    }
+
+    const code = data.code;
+    pending = {
+      code,
+      deepLink: data.deep_link
+        || `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${encodeURIComponent(code)}`,
+      instructions: data.instructions || '',
+      expired: false,
+    };
+    if (state.currentView === 'notifications') renderNotificationsView();
+    startLinkPolling();
   } catch (e) {
     console.error('connectTelegram failed', e);
-    toast('Could not start linking: ' + (e.message || e), true);
+    toast('Could not generate link code. Please try again.', true);
   }
+}
+
+export function copyTelegramCode() {
+  if (!pending?.code) return;
+  try {
+    navigator.clipboard?.writeText(pending.code);
+    toast('Code copied');
+  } catch {
+    toast('Copy failed — select it manually', true);
+  }
+}
+
+function startLinkPolling() {
+  stopLinkPolling();
+  pollDeadline = Date.now() + POLL_WINDOW_MS;
+  pollTimer = setInterval(async () => {
+    // Stop if the user navigated away from the page.
+    if (state.currentView !== 'notifications') { stopLinkPolling(); return; }
+    if (Date.now() > pollDeadline) {
+      stopLinkPolling();
+      if (pending) pending.expired = true;
+      if (state.currentView === 'notifications') renderNotificationsView();
+      return;
+    }
+    try {
+      const uid = state.currentAuthUser?.id;
+      if (!uid) return;
+      const { data } = await sb
+        .from('profiles')
+        .select('telegram_chat_id, telegram_username, telegram_linked_at, telegram_notifications_enabled')
+        .eq('id', uid)
+        .single();
+      if (data?.telegram_chat_id) {
+        tg.linked = true;
+        tg.username = data.telegram_username || null;
+        tg.linkedAt = data.telegram_linked_at || null;
+        tg.enabled = data.telegram_notifications_enabled !== false;
+        pending = null;
+        stopLinkPolling();
+        toast('Telegram connected');
+        if (state.currentView === 'notifications') renderNotificationsView();
+      }
+    } catch (e) {
+      // Transient — keep polling until the deadline.
+    }
+  }, POLL_MS);
+}
+
+function stopLinkPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// Leaving the page must cancel any in-flight pending attempt + polling.
+export function leaveNotifications() {
+  stopLinkPolling();
+  pending = null;
+  if (window.setView) window.setView('dashboard');
 }
 
 export async function refreshTelegramAfterConnect() {
@@ -174,6 +288,9 @@ export async function disconnectTelegram() {
     if (error) throw error;
     tg.linked = false;
     tg.username = null;
+    tg.linkedAt = null;
+    pending = null;
+    stopLinkPolling();
     toast('Telegram disconnected');
     renderNotificationsView();
   } catch (e) {
@@ -218,9 +335,6 @@ function reqDept(r) {
   return r?.function || r?.subFunction || r?.unit || '';
 }
 
-// req.status -> { event_type, audience, roles? }
-// Maps the app's workflow statuses onto the backend's documented
-// event_type vocabulary (see docs/v41_telegram_contract.md).
 const REQ_ROUTING = {
   hrbp_review:         { event: 'requisition_submitted',      audience: 'role', roles: ['hrbp'] },
   fh_approval:         { event: 'requisition_submitted',      audience: 'role', roles: ['function_head'] },
