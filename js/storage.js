@@ -482,6 +482,7 @@ export async function loadEverything() {
     // Attach interview (first one for this app, if any)
     const iv = (ivRes.data || []).find(i => i.application_id === a.id);
     if (iv) {
+      c._interviewDbId = iv.id;
       c.interview = {
         datetime: iv.scheduled_at,
         type: ({phone:'Phone',video:'Video Call',onsite:'In-person',panel:'Panel',take_home:'Take-home',technical:'Technical',cultural:'Cultural'})[iv.interview_type] || iv.interview_type,
@@ -489,13 +490,19 @@ export async function loadEverything() {
         location: iv.location_or_link || '',
         notes: iv.summary || ''
       };
-      // Attach feedback
-      c.feedback = (ivfRes.data || []).filter(f => f.interview_id === iv.id).map(f => ({
-        interviewerId: null,
-        rating: ({strong_hire:'Strong Yes',hire:'Yes',maybe:'Maybe',no_hire:'No',strong_no_hire:'Strong No'})[f.recommendation] || f.recommendation,
-        notes: f.strengths || '',
-        submittedAt: f.submitted_at
-      }));
+      // Attach feedback. panel_member_ids holds the interview-panel employee
+      // UUIDs; keep _dbId so saveInterviewAndFeedback() doesn't re-insert.
+      c.feedback = (ivfRes.data || []).filter(f => f.interview_id === iv.id).map(f => {
+        const panelIds = Array.isArray(f.panel_member_ids) ? f.panel_member_ids : [];
+        return {
+          _dbId: f.id,
+          panelIds,
+          interviewerId: panelIds[0] || null,
+          rating: ({strong_hire:'Strong Yes',hire:'Yes',maybe:'Maybe',no_hire:'No',strong_no_hire:'Strong No'})[f.recommendation] || f.recommendation,
+          notes: f.strengths || '',
+          submittedAt: f.submitted_at
+        };
+      });
     }
     state.candidates.push(c);
   });
@@ -906,6 +913,76 @@ export async function persistReqChange(r, activityText, options = {}) {
 
 // Targeted insert/update for ONE candidate + its application row. Mirror of
 // saveSingleRequisition but for candidates. Awaitable.
+// Rating label (shown in the modal) → interview_feedback.recommendation enum.
+const RATING_TO_RECO = {
+  'Strong Yes': 'strong_hire',
+  'Yes': 'hire',
+  'Maybe': 'maybe',
+  'No': 'no_hire',
+  'Strong No': 'strong_no_hire',
+};
+// Interview-type label → interviews.interview_type enum.
+const ITYPE_TO_DB = {
+  'Phone': 'phone', 'Phone Screen': 'phone',
+  'Video Call': 'video',
+  'In-person': 'onsite',
+  'Panel': 'panel',
+  'Take-home': 'take_home',
+  'Technical': 'technical',
+  'Cultural': 'cultural',
+};
+
+// Persist a candidate's interview + interview feedback. The app reads these
+// tables on load but historically never wrote them, so feedback (and the
+// interview panel) was lost on reload. interview_feedback.interview_id is a
+// required FK, so we ensure an interviews row exists first, then insert any
+// feedback entry that hasn't been saved yet (tracked via f._dbId).
+export async function saveInterviewAndFeedback(c) {
+  const feedback = Array.isArray(c.feedback) ? c.feedback : [];
+  const pending = feedback.filter(f => !f._dbId);
+  if (pending.length === 0 && !c.interview) return;
+  if (!c._appDbId) return; // need the application row as the FK target
+
+  if (!c._interviewDbId) {
+    const { data: existing, error: selErr } = await sb.from('interviews')
+      .select('id').eq('application_id', c._appDbId).limit(1).maybeSingle();
+    if (selErr) throw selErr;
+    if (existing) {
+      c._interviewDbId = existing.id;
+    } else {
+      const ivPayload = {
+        tenant_id: state.currentTenantId,
+        application_id: c._appDbId,
+        scheduled_at: c.interview?.datetime || new Date().toISOString(),
+        interview_type: ITYPE_TO_DB[c.interview?.type] || 'panel',
+        location_or_link: c.interview?.location || null,
+        summary: c.interview?.notes || null,
+      };
+      const { data, error } = await sb.from('interviews')
+        .insert(ivPayload).select('id').single();
+      if (error) throw error;
+      c._interviewDbId = data.id;
+    }
+  }
+
+  for (const f of pending) {
+    const fbPayload = {
+      tenant_id: state.currentTenantId,
+      interview_id: c._interviewDbId,
+      recommendation: RATING_TO_RECO[f.rating] || 'maybe',
+      strengths: f.notes || '',
+      submitted_at: f.submittedAt || new Date().toISOString(),
+      panel_member_ids: Array.isArray(f.panelIds) && f.panelIds.length
+        ? f.panelIds
+        : (f.interviewerId ? [f.interviewerId] : []),
+    };
+    const { data, error } = await sb.from('interview_feedback')
+      .insert(fbPayload).select('id').single();
+    if (error) throw error;
+    f._dbId = data.id;
+  }
+}
+
 export async function saveSingleCandidate(c) {
   const candPayload = {
     tenant_id: state.currentTenantId,
@@ -989,6 +1066,7 @@ export async function saveSingleCandidate(c) {
     if (error) throw error;
     c._appDbId = data.id;
   }
+  await saveInterviewAndFeedback(c);
   toast('Saved');
   return c;
 }
