@@ -779,12 +779,16 @@ select { cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns
   padding-bottom: 1rem;
 }
 .kanban-board {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(240px, 1fr));
+  display: flex;
   gap: 0.9rem;
-  min-width: 1200px;
+  /* min-content lets the flex row grow past the wrapper so .kanban-wrapper's
+     overflow-x:auto provides horizontal scroll instead of wrapping. */
+  min-width: min-content;
 }
 .kanban-col {
+  /* grow to fill wide screens, never shrink below 240px → 6+ columns stay
+     on one row and the board scrolls horizontally instead of wrapping. */
+  flex: 1 0 240px;
   background: var(--paper-2);
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
