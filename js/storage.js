@@ -972,10 +972,12 @@ export async function saveInterviewAndFeedback(c) {
     const fbPayload = {
       tenant_id: state.currentTenantId,
       interview_id: c._interviewDbId,
-      // panelist_id is a legacy NOT-NULL single-panelist column; keep it
-      // populated with the first panel member. The full panel lives in
-      // panel_member_ids.
-      panelist_id: panelIds[0] || null,
+      // panelist_id is a legacy NOT-NULL column with a FK to profiles
+      // (login users). Our panel is made of employees (mostly no login),
+      // so this records the logged-in user submitting the feedback —
+      // same value as created_by elsewhere. The real panel lives in
+      // panel_member_ids (plain uuid[], no FK).
+      panelist_id: state.currentAuthUser?.id || null,
       recommendation: RATING_TO_RECO[f.rating] || 'maybe',
       strengths: f.notes || '',
       submitted_at: f.submittedAt || new Date().toISOString(),
