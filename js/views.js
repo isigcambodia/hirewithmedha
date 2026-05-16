@@ -22,7 +22,7 @@ import {
   saveData, saveRequisitions, enrichEntityIdsFromDb, saveSingleRequisition,
   persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
   saveCandidates, saveActivitiesTail, loadData, toast, logActivity, saveEmployee,
-  deactivateEmployee, reactivateEmployee, autoCreateEmployeeForHire,
+  deactivateEmployee, reactivateEmployee, autoCreateEmployeeForHire, persistOfferAccepted,
 } from './storage.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
@@ -2517,12 +2517,17 @@ function renderRecruiterDetail(reqId) {
   const r = state.requisitions.find(x => x.id === reqId);
   if (!r) return '<div class="empty">Not found</div>';
   
-  const reqCands = state.candidates.filter(c => c.reqId === reqId && c.status === 'active');
-  const stages = ['sourcing', 'screening', 'interview', 'preemployment', 'offer'];
-  const stageLabelsEN = { sourcing: 'Sourcing', screening: 'Screening', interview: 'Interview', preemployment: 'Pre-employment', offer: 'Offer' };
-  const stageLabelsKM = { sourcing: 'ស្វែងរក', screening: 'ពិនិត្យ', interview: 'សម្ភាសន៍', preemployment: 'ពិនិត្យមុន', offer: 'ផ្តល់ជូន' };
+  // Active pipeline (5 stages) excludes rejected. The Hired column is sourced
+  // separately so historical hired candidates render even if their top-level
+  // status isn't 'active' (per the v36 spec's historical-data note).
+  const allCandsForReq = state.candidates.filter(c => c.reqId === reqId);
+  const reqCands = allCandsForReq.filter(c => c.status === 'active' && c.stage !== 'hired');
+  const hiredCands = allCandsForReq.filter(c => c.stage === 'hired');
+  const stages = ['sourcing', 'screening', 'interview', 'preemployment', 'offer', 'hired'];
+  const stageLabelsEN = { sourcing: 'Sourcing', screening: 'Screening', interview: 'Interview', preemployment: 'Pre-employment', offer: 'Offer', hired: 'Hired' };
+  const stageLabelsKM = { sourcing: 'ស្វែងរក', screening: 'ពិនិត្យ', interview: 'សម្ភាសន៍', preemployment: 'ពិនិត្យមុន', offer: 'ផ្តល់ជូន', hired: 'បានជ្រើសរើស' };
   const stageLabels = state.currentLang === 'km' ? stageLabelsKM : stageLabelsEN;
-  const stageColors = { sourcing: '#73726c', screening: '#1e40af', interview: '#1e40af', preemployment: '#b45309', offer: '#2d7a4f' };
+  const stageColors = { sourcing: '#73726c', screening: '#1e40af', interview: '#1e40af', preemployment: '#b45309', offer: '#2d7a4f', hired: '#15803d' };
   
   const requester = getUser(r.requesterId);
   // Use the rich helpers so we get role tags and on-behalf-of context.
@@ -2535,6 +2540,8 @@ function renderRecruiterDetail(reqId) {
   const daysLeft = daysUntil(r.targetFillDate);
   const slaClass = daysLeft > 7 ? 'sla-good' : daysLeft > 3 ? 'sla-warning' : 'sla-bad';
   const isOnHold = r.status === 'on_hold';
+  // v36 hired-stage: a closed req is terminal — no new candidates, no stage moves.
+  const isClosed = r.status === 'closed';
   
   return `
     <div class="view-enter">
@@ -2632,20 +2639,22 @@ function renderRecruiterDetail(reqId) {
       
       <div class="flex-between mt-3 mb-2">
         <h2>${t('sec_candidate_pipeline')}</h2>
-        <button class="btn btn-primary" onclick="addCandidate('${escJs(r.id)}')" ${isOnHold ? 'disabled title="Requisition is on hold"' : ''}>${ICONS.plus} ${t('btn_add_cand')}</button>
+        <button class="btn btn-primary" onclick="addCandidate('${escJs(r.id)}')" ${isOnHold ? 'disabled title="Requisition is on hold"' : isClosed ? `disabled title="${esc(t('hire_req_closed_tip') || 'Requisition is closed')}"` : ''}>${ICONS.plus} ${t('btn_add_cand')}</button>
       </div>
       
       <div class="kanban-wrapper" ${isOnHold ? 'style="opacity: 0.55;"' : ''}>
         <div class="kanban-board">
           ${stages.map(stage => {
-            const cands = reqCands.filter(c => c.stage === stage);
+            const cands = stage === 'hired'
+              ? hiredCands
+              : reqCands.filter(c => c.stage === stage);
             return `
               <div class="kanban-col">
                 <div class="kanban-col-header">
                   <span class="kanban-stage-name" style="color: ${stageColors[stage]};">${stageLabels[stage]}</span>
                   <span class="kanban-count">${cands.length}</span>
                 </div>
-                ${cands.map(c => renderCandCard(c, isOnHold)).join('')}
+                ${cands.map(c => renderCandCard(c, isOnHold || isClosed)).join('')}
               </div>
             `;
           }).join('')}
@@ -2679,6 +2688,9 @@ function renderCandCard(c, isOnHold = false) {
     else if (c.offer.status === 'sent') actions = `<button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button><button class="btn btn-warning" onclick="offerResponse('${escJs(c.id)}', 'negotiating')" ${dis}>Negotiate</button><button class="btn btn-danger" onclick="offerResponse('${escJs(c.id)}', 'declined')" ${dis}>Decline</button>`;
     else if (c.offer.status === 'accepted') actions = `<span class="badge badge-success">${ICONS.check} Accepted</span>`;
     else if (c.offer.status === 'negotiating') actions = `<button class="btn btn-secondary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Update</button><button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button>`;
+  } else if (c.stage === 'hired') {
+    // Terminal state — no further actions. One-way per the v36 spec.
+    actions = `<span class="badge badge-success">${ICONS.check} ${t('stage_hired') || 'Hired'}</span>`;
   }
 
   // CV view button — only shown to roles allowed to view CVs (PII gate).
@@ -3386,30 +3398,44 @@ async function sendOffer(candId) {
 async function offerResponse(candId, response) {
   const c = state.candidates.find(x => x.id === candId);
   if (!c || !c.offer) return;
-  c.offer.status = response;
-  c.offer.respondedAt = new Date().toISOString();
-  let reqActivity = null;
   if (response === 'accepted') {
-    const r = state.requisitions.find(x => x.id === c.reqId);
-    r.status = 'pending_close';
-    // Persist the requisition change first (status → pending_close)
+    // v36 hired-stage: accepting an offer now runs the 4-step server
+    // transaction (move-to-hired, close req, auto-reject others) instead of
+    // the old pending_close path.
+    c.offer.status = 'accepted';
+    c.offer.respondedAt = new Date().toISOString();
+    let result;
     try {
-      await saveSingleRequisition(r);
+      result = await persistOfferAccepted(c);
     } catch (e) {
-      console.error('offerResponse req save failed:', e);
-      toast('Failed to update requisition: ' + (e.message || e), true);
+      console.error('offer acceptance failed:', e);
+      toast((t('hire_err_failed') || 'Hire failed') + ': ' + (e.message || e), true);
       return;
     }
-    reqActivity = `Offer accepted — expected start: ${formatDate(c.offer.startDate)}`;
-    // Gap 3 — auto-create onboarding row so the recruiter can log day 1 status
-    // and the HRBP can log probation outcome at day 30.
+    if (result.raceDetected) {
+      // Step 2 affected 0 rows — another action already closed the req. The
+      // candidate is still hired (step 1 succeeded); just warn.
+      toast(t('hire_race_warning') || 'This requisition was already closed by another action.', true);
+    }
+    const hiredName = c.name || (t('txt_candidate') || 'candidate');
+    logActivity(c.reqId, `${t('hire_log_filled_by') || 'Requisition filled by'} ${hiredName}. ${result.autoRejected} ${t('hire_log_autorejected') || 'other candidate(s) auto-rejected.'}`);
+    // Background: onboarding + employee auto-create (unchanged behavior).
     autoCreateOnboardingForHire(c).catch(e => console.error('[onboarding] background:', e));
-    // v37 step 5 — also auto-create the employees row so the new hire shows
-    // up in the Employees master list immediately. Best-effort; logged on failure.
     autoCreateEmployeeForHire(c).then(emp => {
       if (emp) toast(`${t('emp_toast_auto_created') || 'Employee record auto-created for'} ${emp.name_en}. ${t('emp_toast_auto_edit_hint') || 'Edit it in the Employees module to complete details.'}`);
     }).catch(e => console.error('[employee auto-create]', e));
-  } else if (response === 'declined') {
+    if (!result.raceDetected) {
+      toast(`${hiredName} ${t('hire_success_suffix') || 'hired — requisition closed.'}`);
+    }
+    render();
+    return;
+  }
+
+  // Declined / negotiating — unchanged behavior.
+  c.offer.status = response;
+  c.offer.respondedAt = new Date().toISOString();
+  let reqActivity = null;
+  if (response === 'declined') {
     c.status = 'rejected';
     reqActivity = 'Offer declined';
   } else {

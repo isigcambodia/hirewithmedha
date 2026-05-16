@@ -84,6 +84,10 @@ export function reqFromDb(row) {
     cancelReason: row.cancel_reason,
     resourcesRequired: row.resources_required || { items: [], other: null },
     updatedAt: row.updated_at,
+    // v36 hired-stage — close metadata. Historical (585) rows have these NULL.
+    closedAt: row.closed_at || null,
+    closedReason: row.closed_reason || null,
+    filledByApplicationId: row.filled_by_application_id || null,
   };
 }
 
@@ -797,6 +801,80 @@ export async function saveSingleRequisition(r) {
   }
   toast('Saved');
   return r;
+}
+
+// ---- v36 hired-stage: offer-acceptance trigger --------------------------
+// Performs the 4-step server transaction from the v36 spec when a recruiter
+// accepts an offer. Direct Supabase calls (not the generic reqToDb path) so
+// the spec's race guards are preserved verbatim:
+//   1. Move accepted application to candidate_stage='hired' (guard: at 'offer')
+//   2. Close the parent req (guard: workflow_status NOT IN closed/cancelled/rejected)
+//   3. Auto-reject every other still-active candidate on the req
+// Steps run sequentially; a failure throws before later steps so callers can
+// surface it. In-memory state is synced on success. Returns a result summary.
+export async function persistOfferAccepted(candidate) {
+  const appId = candidate._appDbId;
+  const req = state.requisitions.find(r => r.id === candidate.reqId);
+  if (!appId) throw new Error('Candidate has no application id (_appDbId)');
+  if (!req || !req._dbId) throw new Error('Parent requisition not found for ' + candidate.reqId);
+
+  const nowIso = new Date().toISOString();
+  const result = { movedToHired: false, reqClosed: false, raceDetected: false, autoRejected: 0 };
+
+  // Step 1 — move accepted application to 'hired' + flip offer_status.
+  // Guard: only if currently at 'offer' (don't re-hire / clobber).
+  {
+    const { data, error } = await sb.from('applications')
+      .update({ candidate_stage: 'hired', stage_changed_at: nowIso, offer_status: 'accepted' })
+      .eq('id', appId).eq('candidate_stage', 'offer').select();
+    if (error) throw new Error('Step 1 (move to hired) failed: ' + error.message);
+    result.movedToHired = !!(data && data.length);
+  }
+
+  // Step 2 — close the parent requisition with the race guard.
+  {
+    const { data, error } = await sb.from('requisitions')
+      .update({
+        workflow_status: 'closed',
+        closed_at: nowIso,
+        closed_reason: 'filled',
+        filled_by_application_id: appId,
+      })
+      .eq('id', req._dbId)
+      .not('workflow_status', 'in', '(closed,cancelled,rejected)')
+      .select();
+    if (error) throw new Error('Step 2 (close req) failed: ' + error.message);
+    if (!data || data.length === 0) result.raceDetected = true;  // someone else closed it first
+    else result.reqClosed = true;
+  }
+
+  // Step 3 — auto-reject all other still-active candidates on this req.
+  {
+    const { data, error } = await sb.from('applications')
+      .update({ candidate_stage: 'rejected', status: 'rejected', stage_changed_at: nowIso })
+      .eq('requisition_id', req._dbId)
+      .neq('id', appId)
+      .not('candidate_stage', 'in', '(hired,rejected,withdrawn)')
+      .select();
+    if (error) throw new Error('Step 3 (auto-reject) failed: ' + error.message);
+    result.autoRejected = (data || []).length;
+  }
+
+  // Sync in-memory model so the kanban re-render reflects reality immediately.
+  candidate.stage = 'hired';
+  if (candidate.offer) candidate.offer.status = 'accepted';
+  req.status = 'closed';
+  req.closedAt = nowIso;
+  req.closedReason = 'filled';
+  req.filledByApplicationId = appId;
+  state.candidates.forEach(oc => {
+    if (oc.reqId === candidate.reqId && oc._appDbId !== appId
+        && !['hired', 'rejected', 'withdrawn'].includes(oc.stage)) {
+      oc.stage = 'rejected';
+      oc.status = 'rejected';
+    }
+  });
+  return result;
 }
 
 // Helper for state-mutation actions (approve/reject/hold/cancel/etc). Persists
