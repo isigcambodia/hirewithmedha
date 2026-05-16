@@ -966,15 +966,20 @@ export async function saveInterviewAndFeedback(c) {
   }
 
   for (const f of pending) {
+    const panelIds = Array.isArray(f.panelIds) && f.panelIds.length
+      ? f.panelIds
+      : (f.interviewerId ? [f.interviewerId] : []);
     const fbPayload = {
       tenant_id: state.currentTenantId,
       interview_id: c._interviewDbId,
+      // panelist_id is a legacy NOT-NULL single-panelist column; keep it
+      // populated with the first panel member. The full panel lives in
+      // panel_member_ids.
+      panelist_id: panelIds[0] || null,
       recommendation: RATING_TO_RECO[f.rating] || 'maybe',
       strengths: f.notes || '',
       submitted_at: f.submittedAt || new Date().toISOString(),
-      panel_member_ids: Array.isArray(f.panelIds) && f.panelIds.length
-        ? f.panelIds
-        : (f.interviewerId ? [f.interviewerId] : []),
+      panel_member_ids: panelIds,
     };
     const { data, error } = await sb.from('interview_feedback')
       .insert(fbPayload).select('id').single();
