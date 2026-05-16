@@ -274,7 +274,12 @@ export function candFromDb(row, appRow) {
       notes: appRow.offer_notes,
       sentAt: appRow.offer_sent_at,
       status: appRow.offer_status
-    } : null
+    } : null,
+    // v37 — interview sub-steps (NULL for historical/pre-v37 applications)
+    interviewStep: appRow?.interview_step || null,
+    interviewStep1At: appRow?.interview_step_1_at || null,
+    interviewStep2At: appRow?.interview_step_2_at || null,
+    interviewFinalAt: appRow?.interview_final_at || null
   };
   return c;
 }
@@ -970,6 +975,11 @@ export async function saveSingleCandidate(c) {
     offer_notes: c.offer?.notes ?? null,
     offer_sent_at: c.offer?.sentAt ?? null,
     offer_status: c.offer?.status ?? null,
+    // v37 — interview sub-steps
+    interview_step: c.interviewStep || null,
+    interview_step_1_at: c.interviewStep1At || null,
+    interview_step_2_at: c.interviewStep2At || null,
+    interview_final_at: c.interviewFinalAt || null,
   };
   if (c._appDbId) {
     const { error } = await sb.from('applications').update(appPayload).eq('id', c._appDbId);
@@ -1035,7 +1045,7 @@ export async function persistCandidateChange(c, activityText, options = {}) {
   try {
     await saveSingleCandidate(c);
     if (activityText) {
-      logActivity(c.reqId, activityText);
+      logActivity(c.reqId, activityText, options.activityMeta || null);
       await saveData('activities', state.activities);
     }
     if (options.closeModal !== false) closeModal();
@@ -1137,7 +1147,7 @@ export async function saveActivitiesTail(list) {
     entity_type: 'requisition',
     entity_id: req._dbId,
     action: 'note',
-    metadata: { text: head.text }
+    metadata: { text: head.text, ...(head.meta || {}) }
   }).select().single();
   if (!error && data) head._dbId = data.id;
 }
@@ -1331,7 +1341,7 @@ export async function autoCreateEmployeeForHire(candidate) {
 }
 
 
-export function logActivity(reqId, text) {
-  state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'] });
+export function logActivity(reqId, text, meta) {
+  state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'], meta: meta || null });
   saveData('activities', state.activities);
 }

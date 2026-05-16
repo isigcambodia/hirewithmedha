@@ -109,6 +109,16 @@ export function getUserInitials(id) {
   return u.name.split(/\s+/).map(n => n[0]).filter(Boolean).join('').substring(0, 2).toUpperCase();
 }
 
+// Display name of the currently logged-in user, for activity-log attribution
+// (v37 — "Socheata advanced candidate to Interview Step 2"). Same fallback
+// chain as the header user chip so audit text matches what the user sees.
+export function currentActorName() {
+  return state.currentAuthUser?.profile?.full_name
+    || state.currentAuthUser?.user_metadata?.full_name
+    || state.currentAuthUser?.email?.split('@')[0]
+    || 'User';
+}
+
 // Resolve the role label for a user UUID. Used by getRequesterDisplay to
 // show "Tim Raksa (HRBP)" instead of just "Tim Raksa". Returns null if
 // the user / role can't be resolved.

@@ -417,6 +417,23 @@ export const TRANSLATIONS = {
     // ⭐ v35 — COI document upload (replaces v34 checkbox)
     lbl_coi: 'Conflict of Interest (COI) declaration',
     lbl_coi_no_doc: 'No COI form uploaded yet',
+
+    // ⭐ v37 — interview sub-steps
+    iv_step_1: 'Step 1',
+    iv_step_2: 'Step 2',
+    iv_final: 'Final',
+    iv_to_step_2: '→ Step 2',
+    iv_to_final: '→ Final',
+    iv_back_step_1: '← Step 1',
+    iv_back_step_2: '← Step 2',
+    iv_to_preemp: '→ Pre-emp',
+    iv_err_not_final: 'Complete Final Interview before moving to Pre-Employment',
+    iv_tip_complete_final: 'Complete Final Interview first',
+    iv_confirm_title: 'Move candidate back to {step}?',
+    iv_confirm_body: 'This will clear their {currentStep} completion. This action can be undone by advancing them forward again.',
+    iv_confirm_reason_label: 'Optional: Reason for moving back',
+    iv_confirm_cancel: 'Cancel',
+    iv_confirm_back: 'Move Back',
   },
   km: {
     product_name: 'ប្រព័ន្ធជ្រើសរើសបុគ្គលិក',
@@ -811,6 +828,23 @@ export const TRANSLATIONS = {
     // ⭐ v35 — COI document upload (replaces v34 checkbox)
     lbl_coi: 'សេចក្តីប្រកាសជម្លោះផលប្រយោជន៍ (COI)',
     lbl_coi_no_doc: 'មិនទាន់បានផ្ទុកឡើងឯកសារ COI ទេ',
+
+    // ⭐ v37 — interview sub-steps
+    iv_step_1: 'ជំហានទី ១',
+    iv_step_2: 'ជំហានទី ២',
+    iv_final: 'ចុងក្រោយ',
+    iv_to_step_2: '→ ជំហានទី ២',
+    iv_to_final: '→ ចុងក្រោយ',
+    iv_back_step_1: '← ជំហានទី ១',
+    iv_back_step_2: '← ជំហានទី ២',
+    iv_to_preemp: '→ ពិនិត្យមុន',
+    iv_err_not_final: 'សូមបញ្ចប់ការសម្ភាសន៍ចុងក្រោយ មុនពេលផ្លាស់ទីទៅការពិនិត្យមុនការងារ',
+    iv_tip_complete_final: 'សូមបញ្ចប់ការសម្ភាសន៍ចុងក្រោយជាមុនសិន',
+    iv_confirm_title: 'ផ្លាស់ទីបេក្ខជនត្រឡប់ទៅ {step} វិញ?',
+    iv_confirm_body: 'នេះនឹងលុបការបញ្ចប់ {currentStep} របស់ពួកគេ។ សកម្មភាពនេះអាចត្រឡប់វិញបាន ដោយរំកិលពួកគេទៅមុខម្តងទៀត។',
+    iv_confirm_reason_label: 'ស្រេចចិត្ត៖ មូលហេតុនៃការផ្លាស់ទីត្រឡប់',
+    iv_confirm_cancel: 'បោះបង់',
+    iv_confirm_back: 'ផ្លាស់ទីត្រឡប់',
   }
 };
 

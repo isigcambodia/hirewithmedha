@@ -27,7 +27,7 @@ import {
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
   getActiveEmployeesInScope,
-  getUser, getUserName, getUserInitials, getUserRoleLabel, getRequesterDisplay,
+  getUser, getUserName, getUserInitials, getUserRoleLabel, getRequesterDisplay, currentActorName,
   getUsersWithRoles, getSupervisorName, getHiringManagerName,
   daysSince, daysUntil, formatDate, formatDateTime,
   getSLAClass, getSLATarget, calculateTargetFillDate, getStageDate, getCurrentOwner,
@@ -2664,6 +2664,13 @@ function renderRecruiterDetail(reqId) {
   `;
 }
 
+// v37 — human label for an interview sub-step (bilingual via t()).
+function ivStepLabel(step) {
+  if (step === 'final') return t('iv_final') || 'Final';
+  if (step === 'step_2') return t('iv_step_2') || 'Step 2';
+  return t('iv_step_1') || 'Step 1';
+}
+
 function renderCandCard(c, isOnHold = false) {
   let actions = '';
   const dis = isOnHold ? 'disabled title="Requisition is on hold"' : '';
@@ -2672,7 +2679,26 @@ function renderCandCard(c, isOnHold = false) {
   } else if (c.stage === 'screening') {
     actions = `<button class="btn btn-primary" onclick="scheduleInterview('${escJs(c.id)}')" ${dis}>Interview</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'interview') {
-    actions = `<button class="btn btn-secondary" onclick="addFeedback('${escJs(c.id)}')" ${dis}>Feedback</button><button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'preemployment')" ${dis}>Pre-emp</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+    // v37 — sub-step aware actions. Default to step_1 defensively (the migration
+    // backfills existing interview candidates; this guards any null edge).
+    const step = c.interviewStep || 'step_1';
+    const fb = `<button class="btn btn-secondary" onclick="addFeedback('${escJs(c.id)}')" ${dis}>${t('btn_feedback') || 'Feedback'}</button>`;
+    const rej = `<button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
+    // Pre-emp is only reachable from a completed Final interview (§3.2/§5.1).
+    // Always rendered so the gate is a visible cue, disabled until Final (Test 8).
+    const preEmpBlocked = isOnHold || step !== 'final';
+    const preEmpTip = isOnHold ? 'Requisition is on hold' : (t('iv_tip_complete_final') || 'Complete Final Interview first');
+    const preEmpAttr = preEmpBlocked ? `disabled title="${esc(preEmpTip)}"` : '';
+    const preEmpBtn = `<button class="btn btn-primary" onclick="advanceInterviewStep('${escJs(c.id)}', 'preemp')" ${preEmpAttr}>${t('iv_to_preemp') || '→ Pre-emp'}</button>`;
+    let stepBtns = '';
+    if (step === 'step_1') {
+      stepBtns = `<button class="btn btn-secondary" onclick="advanceInterviewStep('${escJs(c.id)}', 'step_2')" ${dis}>${t('iv_to_step_2') || '→ Step 2'}</button><button class="btn btn-secondary" onclick="advanceInterviewStep('${escJs(c.id)}', 'final')" ${dis}>${t('iv_to_final') || '→ Final'}</button>`;
+    } else if (step === 'step_2') {
+      stepBtns = `<button class="btn btn-secondary" onclick="regressInterviewStep('${escJs(c.id)}', 'step_1')" ${dis}>${t('iv_back_step_1') || '← Step 1'}</button><button class="btn btn-secondary" onclick="advanceInterviewStep('${escJs(c.id)}', 'final')" ${dis}>${t('iv_to_final') || '→ Final'}</button>`;
+    } else {
+      stepBtns = `<button class="btn btn-secondary" onclick="regressInterviewStep('${escJs(c.id)}', 'step_2')" ${dis}>${t('iv_back_step_2') || '← Step 2'}</button>`;
+    }
+    actions = fb + stepBtns + preEmpBtn + rej;
   } else if (c.stage === 'preemployment') {
     // Pre-employment "all checks pass" gating: required = reference, background, education, COI document.
     // Criminal record check is OPTIONAL (per TA team feedback 27 Apr — sometimes not applicable).
@@ -2704,6 +2730,7 @@ function renderCandCard(c, isOnHold = false) {
     <div class="cand-card">
       <div class="cand-name">${esc(c.name)}</div>
       <div class="cand-meta">${c.source} · <span class="mono">${daysSince(c.stageChangedAt)}d</span> in stage</div>
+      ${c.stage === 'interview' ? `<div class="cand-meta"><span class="badge ${(c.interviewStep || 'step_1') === 'final' ? 'badge-info' : 'badge-neutral'}">${t('btn_interview') || 'Interview'}: ${ivStepLabel(c.interviewStep || 'step_1')}</span></div>` : ''}
       ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
       ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
       ${cvButton}
@@ -3167,8 +3194,38 @@ async function submitCandidate(reqId) {
 async function moveCandidate(candId, toStage) {
   const c = state.candidates.find(x => x.id === candId);
   if (!c) return;
+  const fromStage = c.stage;
+
+  // v37 — Pre-Employment gate. A candidate may only leave Interview for
+  // Pre-Employment once the Final interview is complete (§5.1, Test 5).
+  // Defensive: the card's Pre-emp button is also disabled until Final, but
+  // any other path (future drag-drop, etc.) is caught here too.
+  if (toStage === 'preemployment' && fromStage === 'interview' && c.interviewStep !== 'final') {
+    toast(t('iv_err_not_final') || 'Complete Final Interview before moving to Pre-Employment', true);
+    return;
+  }
+
   c.stage = toStage;
   c.stageChangedAt = new Date().toISOString();
+
+  // v37 — interview sub-step lifecycle tied to stage transitions (§4.1/§4.3).
+  if (toStage === 'interview') {
+    // Entry → auto-start at Step 1 (fresh cycle).
+    c.interviewStep = 'step_1';
+    c.interviewStep1At = new Date().toISOString();
+    c.interviewStep2At = null;
+    c.interviewFinalAt = null;
+  } else if (fromStage === 'interview' && (toStage === 'screening' || toStage === 'sourcing')) {
+    // Back into the active pipeline for re-assessment → clear so a later
+    // return to Interview starts a fresh cycle (§8.1, Test 7). NOTE: data is
+    // preserved for pre-employment/offer/hired/rejected per Section 12 Q3/Q5
+    // (rejection keeps status on the application, not a stage move here).
+    c.interviewStep = null;
+    c.interviewStep1At = null;
+    c.interviewStep2At = null;
+    c.interviewFinalAt = null;
+  }
+
   await persistCandidateChange(c, `Candidate moved to ${toStage.replace('preemployment', 'pre-employment check')}`, { closeModal: false });
 }
 
@@ -3177,7 +3234,122 @@ async function rejectCandidate(candId) {
   const c = state.candidates.find(x => x.id === candId);
   if (!c) return;
   c.status = 'rejected';
+  // v37 — interview step data is intentionally NOT cleared on rejection
+  // (Section 12 Q5: preserve for funnel/drop-off analytics).
   await persistCandidateChange(c, null, { closeModal: false });
+}
+
+// ============================================================
+// v37 — INTERVIEW SUB-STEPS (Step 1 → Step 2 → Final)
+// ============================================================
+
+// Forward progression and the Pre-Employment exit. Forward moves are direct
+// (no confirmation). 'preemp' is gated on a completed Final interview.
+async function advanceInterviewStep(candId, target) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  const step = c.interviewStep || 'step_1';
+
+  if (target === 'preemp') {
+    // §5.1 Pre-Employment gate. Defense-in-depth: the button is also disabled
+    // until Final, but a non-Final state here still yields a clear message.
+    if (step !== 'final') {
+      toast(t('iv_err_not_final') || 'Complete Final Interview before moving to Pre-Employment', true);
+      return;
+    }
+    c.stage = 'preemployment';
+    c.stageChangedAt = new Date().toISOString();
+    // Q3 — interview step data preserved (analytics).
+    await persistCandidateChange(c, 'Candidate moved to pre-employment check', { closeModal: false });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const actor = currentActorName();
+  const meta = { previous_step: step, performed_by_user_id: state.currentAuthUser?.id || null, performed_by_user_name: actor };
+  let text;
+  if (target === 'step_2') {
+    if (step !== 'step_1') return;                       // §5.2 invalid transition
+    c.interviewStep = 'step_2';
+    c.interviewStep2At = now;
+    text = `${actor} advanced candidate to Interview Step 2`;
+  } else if (target === 'final') {
+    if (step !== 'step_1' && step !== 'step_2') return;  // §5.2 invalid transition
+    const skipped = step === 'step_1';
+    c.interviewStep = 'final';
+    c.interviewFinalAt = now;
+    if (skipped) meta.skipped_steps = ['step_2'];
+    text = skipped
+      ? `${actor} completed Final Interview (skipped Step 2)`
+      : `${actor} completed Final Interview`;
+  } else {
+    return;
+  }
+  meta.new_step = c.interviewStep;
+  await persistCandidateChange(c, text, { closeModal: false, activityMeta: meta });
+}
+
+// Backward movement requires confirmation FIRST (Section 12 Q2). This only
+// opens the modal; the actual regression happens in confirmRegressInterviewStep.
+function regressInterviewStep(candId, target) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  const curStep = c.interviewStep || 'step_1';
+  const targetLabel = ivStepLabel(target);
+  const curLabel = ivStepLabel(curStep);
+  const title = (t('iv_confirm_title') || 'Move candidate back to {step}?').replace('{step}', targetLabel);
+  const body = (t('iv_confirm_body') || 'This will clear their {currentStep} completion. This action can be undone by advancing them forward again.').replace('{currentStep}', curLabel);
+  openModal(`
+    <div class="modal-header"><h2>${esc(title)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
+    <p class="modal-desc">${esc(body)}</p>
+    <div class="form-group">
+      <label>${t('iv_confirm_reason_label') || 'Optional: Reason for moving back'}</label>
+      <textarea id="ivBackReason" rows="2"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('iv_confirm_cancel') || 'Cancel'}</button>
+      <button class="btn btn-danger" onclick="confirmRegressInterviewStep('${escJs(candId)}', '${escJs(target)}')">${t('iv_confirm_back') || 'Move Back'}</button>
+    </div>
+  `);
+  // ESC dismisses (Test 4b). Scoped, self-removing so it can't leak or
+  // interfere with other modals.
+  const onKey = (e) => {
+    if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); closeModal(); }
+  };
+  document.addEventListener('keydown', onKey);
+}
+
+async function confirmRegressInterviewStep(candId, target) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  const reason = (document.getElementById('ivBackReason')?.value || '').trim();
+  const prev = c.interviewStep || 'step_1';
+  const actor = currentActorName();
+  let text;
+  if (target === 'step_2') {            // Final → Step 2
+    if (prev !== 'final') { closeModal(); return; }   // §5.2
+    c.interviewStep = 'step_2';
+    c.interviewFinalAt = null;
+    text = `${actor} moved candidate back to Interview Step 2`;
+  } else if (target === 'step_1') {     // Step 2 → Step 1
+    if (prev !== 'step_2') { closeModal(); return; }   // §5.2
+    c.interviewStep = 'step_1';
+    c.interviewStep2At = null;
+    text = `${actor} moved candidate back to Interview Step 1`;
+  } else {
+    closeModal();
+    return;
+  }
+  const meta = {
+    previous_step: prev,
+    new_step: c.interviewStep,
+    performed_by_user_id: state.currentAuthUser?.id || null,
+    performed_by_user_name: actor,
+  };
+  if (reason) meta.reason = reason;     // Section 6 — reason saved to metadata
+  // Default closeModal !== false → the confirmation modal closes on success.
+  await persistCandidateChange(c, text, { activityMeta: meta });
 }
 
 function scheduleInterview(candId) {
@@ -3210,7 +3382,12 @@ async function submitInterview(candId) {
   c.interview = { datetime: new Date(dt).toISOString(), type: document.getElementById('intType').value, interviewers: [document.getElementById('intInt').value], location: document.getElementById('intLoc').value, notes: document.getElementById('intNotes').value };
   c.stage = 'interview';
   c.stageChangedAt = new Date().toISOString();
-  await persistCandidateChange(c, 'Interview scheduled');
+  // v37 — entering Interview auto-starts at Step 1 (§4.1, Test 1).
+  c.interviewStep = 'step_1';
+  c.interviewStep1At = new Date().toISOString();
+  c.interviewStep2At = null;
+  c.interviewFinalAt = null;
+  await persistCandidateChange(c, 'Interview scheduled — Interview Step 1');
 }
 
 function addFeedback(candId) {
@@ -5247,6 +5424,9 @@ export {
   _renderChannelCostModal,
   addCandidate,
   addFeedback,
+  advanceInterviewStep,
+  regressInterviewStep,
+  confirmRegressInterviewStep,
   approveCEO,
   approveFH,
   approveHRBP,
