@@ -332,6 +332,14 @@ export const TRANSLATIONS = {
     // v37 step 5 — Auto-create from Hire
     emp_toast_auto_created: 'Employee record auto-created for',
     emp_toast_auto_edit_hint: 'Edit it in the Employees module to complete details.',
+    // v36 hired-stage
+    stage_hired: 'Hired',
+    hire_err_failed: 'Hire failed',
+    hire_race_warning: 'This requisition was already closed by another action.',
+    hire_log_filled_by: 'Requisition filled by',
+    hire_log_autorejected: 'other candidate(s) auto-rejected.',
+    hire_success_suffix: 'hired — requisition closed.',
+    hire_req_closed_tip: 'Requisition is closed',
     btn_new_req_on_behalf: 'New requisition (on behalf)',
     sec_on_behalf_title: 'Raising on behalf',
     sec_on_behalf_desc: 'You are raising this requisition as a delegate. Specify which executive (Function Head or CEO) is the actual requesting authority. Leave blank for normal reqs.',
@@ -718,6 +726,14 @@ export const TRANSLATIONS = {
     // v37 step 5 — Auto-create from Hire
     emp_toast_auto_created: 'កំណត់ត្រាបុគ្គលិកត្រូវបានបង្កើតដោយស្វ័យប្រវត្តិសម្រាប់',
     emp_toast_auto_edit_hint: 'កែសម្រួលវានៅក្នុងម៉ូឌុលបុគ្គលិកដើម្បីបំពេញព័ត៌មានលម្អិត។',
+    // v36 hired-stage
+    stage_hired: 'បានជ្រើសរើស',
+    hire_err_failed: 'ការជ្រើសរើសបរាជ័យ',
+    hire_race_warning: 'សំណើនេះត្រូវបានបិទរួចហើយដោយសកម្មភាពផ្សេងទៀត។',
+    hire_log_filled_by: 'សំណើត្រូវបានបំពេញដោយ',
+    hire_log_autorejected: 'បេក្ខជនផ្សេងទៀតត្រូវបានបដិសេធដោយស្វ័យប្រវត្តិ។',
+    hire_success_suffix: 'បានជ្រើសរើស — សំណើត្រូវបានបិទ។',
+    hire_req_closed_tip: 'សំណើត្រូវបានបិទ',
     btn_new_req_on_behalf: 'សំណើថ្មី (ក្នុងនាមអ្នកដទៃ)',
     sec_on_behalf_title: 'ការលើកឡើងក្នុងនាម',
     sec_on_behalf_desc: 'អ្នកកំពុងលើកសំណើនេះក្នុងនាមអ្នកដទៃ។ សូមបញ្ជាក់ថានរណាជាអ្នកគ្រប់គ្រងជាន់ខ្ពស់ដែលជាអ្នកស្នើពិតប្រាកដ។',
