@@ -439,6 +439,18 @@ export const TRANSLATIONS = {
     iv_confirm_reason_label: 'Optional: Reason for moving back',
     iv_confirm_cancel: 'Cancel',
     iv_confirm_back: 'Move Back',
+
+    // ⭐ v39 — backward stage movement
+    stage_sourcing: 'Sourcing',
+    stage_screening: 'Screening',
+    stage_interview: 'Interview',
+    stage_preemployment: 'Pre-Employment',
+    stage_offer: 'Offer',
+    stage_back_tip: 'Move back to {stage}',
+    stage_back_title: 'Move candidate back to {stage}?',
+    stage_back_body: 'This moves {name} back to the {stage} stage. You can move them forward again at any time.',
+    stage_back_note_interview: 'Their interview sub-step progress will be cleared.',
+    stage_back_confirm: 'Move back',
   },
   km: {
     product_name: 'ប្រព័ន្ធជ្រើសរើសបុគ្គលិក',
@@ -855,6 +867,18 @@ export const TRANSLATIONS = {
     iv_confirm_reason_label: 'ស្រេចចិត្ត៖ មូលហេតុនៃការផ្លាស់ទីត្រឡប់',
     iv_confirm_cancel: 'បោះបង់',
     iv_confirm_back: 'ផ្លាស់ទីត្រឡប់',
+
+    // ⭐ v39 — backward stage movement
+    stage_sourcing: 'ស្វែងរក',
+    stage_screening: 'ពិនិត្យ',
+    stage_interview: 'សម្ភាសន៍',
+    stage_preemployment: 'ពិនិត្យមុនការងារ',
+    stage_offer: 'ផ្តល់ជូន',
+    stage_back_tip: 'ផ្លាស់ទីត្រឡប់ទៅ {stage}',
+    stage_back_title: 'ផ្លាស់ទីបេក្ខជនត្រឡប់ទៅ {stage} វិញ?',
+    stage_back_body: 'នេះនឹងផ្លាស់ទី {name} ត្រឡប់ទៅដំណាក់កាល {stage} វិញ។ អ្នកអាចរំកិលពួកគេទៅមុខវិញនៅពេលណាក៏បាន។',
+    stage_back_note_interview: 'វឌ្ឍនភាពជំហានរងនៃការសម្ភាសន៍របស់ពួកគេនឹងត្រូវលុបចោល។',
+    stage_back_confirm: 'ផ្លាស់ទីត្រឡប់',
   }
 };
 

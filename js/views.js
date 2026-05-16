@@ -2675,6 +2675,16 @@ function ivStepLabel(step) {
 function renderCandCard(c, isOnHold = false) {
   let actions = '';
   const dis = isOnHold ? 'disabled title="Requisition is on hold"' : '';
+  // v39 — backward stage movement. Rendered for every stage that has a
+  // previous one (all except 'sourcing' and the terminal 'hired').
+  const prevStage = PREV_STAGE[c.stage];
+  const backTip = prevStage
+    ? (t('stage_back_tip') || 'Move back to {stage}').replace('{stage}', stageLabel(prevStage))
+    : '';
+  const backAttr = isOnHold ? 'disabled title="Requisition is on hold"' : `title="${esc(backTip)}"`;
+  const backBtn = prevStage
+    ? `<button class="btn btn-secondary" onclick="moveCandidateBack('${escJs(c.id)}')" ${backAttr}>${ICONS.back} ${esc(stageLabel(prevStage))}</button>`
+    : '';
   if (c.stage === 'sourcing') {
     actions = `<button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'screening')" ${dis}>Screen</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'screening') {
@@ -2719,6 +2729,9 @@ function renderCandCard(c, isOnHold = false) {
     // Terminal state — no further actions. One-way per the v36 spec.
     actions = `<span class="badge badge-success">${ICONS.check} ${t('stage_hired') || 'Hired'}</span>`;
   }
+
+  // Append the backward-movement button (empty for 'sourcing' / 'hired').
+  actions += backBtn;
 
   // CV view button — only shown to roles allowed to view CVs (PII gate).
   // Button click also re-checks permission in viewCV() as a server-side-style defense.
@@ -3697,6 +3710,109 @@ async function confirmRegressInterviewStep(candId, target) {
   };
   if (reason) meta.reason = reason;     // Section 6 — reason saved to metadata
   // Default closeModal !== false → the confirmation modal closes on success.
+  await persistCandidateChange(c, text, { activityMeta: meta });
+}
+
+// ============================================================
+// v39 — BACKWARD STAGE MOVEMENT
+// ============================================================
+// Each main pipeline stage can be walked back one step:
+//   Sourcing ← Screening ← Interview ← Pre-Employment ← Offer
+// 'sourcing' (first) and 'hired' (terminal, one-way per the v36 spec) have no
+// previous stage. Backward moves require confirmation first with an optional
+// reason — consistent with the v37 interview sub-step regression UX — and are
+// recorded in the requisition activity log.
+
+const PREV_STAGE = {
+  screening: 'sourcing',
+  interview: 'screening',
+  preemployment: 'interview',
+  offer: 'preemployment',
+};
+
+// English stage names for the activity log (logs stay English regardless of UI
+// language, matching moveCandidate / confirmRegressInterviewStep).
+const STAGE_EN = {
+  sourcing: 'Sourcing',
+  screening: 'Screening',
+  interview: 'Interview',
+  preemployment: 'Pre-Employment',
+  offer: 'Offer',
+};
+
+function stageLabel(stage) {
+  return t('stage_' + stage) || STAGE_EN[stage] || stage;
+}
+
+function moveCandidateBack(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  const target = PREV_STAGE[c.stage];
+  if (!target) return;                       // sourcing / hired — nothing before
+  const targetLabel = stageLabel(target);
+  const title = (t('stage_back_title') || 'Move candidate back to {stage}?').replace('{stage}', targetLabel);
+  const body = (t('stage_back_body') || 'This moves {name} back to the {stage} stage. You can move them forward again at any time.')
+    .replace('{name}', c.name).replace('{stage}', targetLabel);
+  // Leaving Interview clears sub-step progress (a fresh cycle starts on any
+  // later return per §8.1) — surface it so it isn't a silent side effect.
+  const note = c.stage === 'interview'
+    ? `<p class="modal-desc">${esc(t('stage_back_note_interview') || 'Their interview sub-step progress will be cleared.')}</p>`
+    : '';
+  openModal(`
+    <div class="modal-header"><h2>${esc(title)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
+    <p class="modal-desc">${esc(body)}</p>
+    ${note}
+    <div class="form-group">
+      <label>${t('iv_confirm_reason_label') || 'Optional: Reason for moving back'}</label>
+      <textarea id="stageBackReason" rows="2"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('iv_confirm_cancel') || 'Cancel'}</button>
+      <button class="btn btn-danger" onclick="confirmMoveCandidateBack('${escJs(candId)}')">${t('stage_back_confirm') || 'Move back'}</button>
+    </div>
+  `);
+  // ESC dismisses — scoped, self-removing (same pattern as regressInterviewStep).
+  const onKey = (e) => {
+    if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); closeModal(); }
+  };
+  document.addEventListener('keydown', onKey);
+}
+
+async function confirmMoveCandidateBack(candId) {
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) return;
+  const fromStage = c.stage;
+  const toStage = PREV_STAGE[fromStage];
+  if (!toStage) { closeModal(); return; }
+  const reason = (document.getElementById('stageBackReason')?.value || '').trim();
+  const actor = currentActorName();
+
+  c.stage = toStage;
+  c.stageChangedAt = new Date().toISOString();
+
+  // Interview sub-step lifecycle, mirrored from moveCandidate() (§4.1/§8.1):
+  // entering Interview starts a fresh Step 1; leaving Interview clears it.
+  if (toStage === 'interview') {
+    c.interviewStep = 'step_1';
+    c.interviewStep1At = new Date().toISOString();
+    c.interviewStep2At = null;
+    c.interviewFinalAt = null;
+  } else if (fromStage === 'interview') {
+    c.interviewStep = null;
+    c.interviewStep1At = null;
+    c.interviewStep2At = null;
+    c.interviewFinalAt = null;
+  }
+
+  const meta = {
+    from_stage: fromStage,
+    to_stage: toStage,
+    performed_by_user_id: state.currentAuthUser?.id || null,
+    performed_by_user_name: actor,
+  };
+  if (reason) meta.reason = reason;
+  const text = `${actor} moved candidate back to ${STAGE_EN[toStage] || toStage}`;
   await persistCandidateChange(c, text, { activityMeta: meta });
 }
 
@@ -5779,6 +5895,8 @@ export {
   advanceInterviewStep,
   regressInterviewStep,
   confirmRegressInterviewStep,
+  moveCandidateBack,
+  confirmMoveCandidateBack,
   approveCEO,
   approveFH,
   approveHRBP,
