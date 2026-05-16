@@ -7,6 +7,7 @@ import { state } from './state.js';
 import { dbg } from './helpers.js';
 import { ORG_STRUCTURE, EXISTING_ROLES } from './constants.js';
 import { closeModal } from './utils.js';
+import { dispatchWorkflowNotification } from './notifications.js';
 
 // UI callbacks — index.html wires these at startup so storage stays UI-agnostic.
 let _render = null;
@@ -901,6 +902,8 @@ export async function persistReqChange(r, activityText, options = {}) {
       logActivity(r.id, activityText);
       await saveData('activities', state.activities);
     }
+    // Best-effort Telegram fan-out; never blocks or fails the save.
+    dispatchWorkflowNotification('req', r, activityText);
     if (options.closeModal !== false) closeModal();
     if (options.nextView !== null) _doNavigate(options.nextView || 'dashboard');
     return true;
@@ -1151,6 +1154,8 @@ export async function persistCandidateChange(c, activityText, options = {}) {
       logActivity(c.reqId, activityText, options.activityMeta || null);
       await saveData('activities', state.activities);
     }
+    // Best-effort Telegram fan-out; never blocks or fails the save.
+    dispatchWorkflowNotification('candidate', c, activityText);
     if (options.closeModal !== false) closeModal();
     if (options.render !== false) _doRender();
     return true;
