@@ -2727,6 +2727,18 @@ function renderCandCard(c, isOnHold = false) {
     ? `<button class="btn btn-secondary btn-sm" onclick="viewCV('${escJs(c._dbId)}')" style="margin-top: 0.5rem; width: 100%;">${t('btn_view_cv') || 'View CV'}</button>`
     : '';
 
+  // View / Edit applicant. View is gated to the CV-viewer role set (same PII
+  // surface). Edit is tighter — only the roles that own applicant data quality.
+  // Both handlers re-check the permission as a server-side-style defense.
+  const canViewCand = ['admin','recruiter','hiring_manager','hrbp','head_ta'].includes(state.currentMember?.role);
+  const canEditCand = ['admin','recruiter','head_ta'].includes(state.currentMember?.role);
+  const veButtons = (canViewCand || canEditCand)
+    ? `<div class="cand-actions" style="margin-top: 0.4rem;">
+        ${canViewCand ? `<button class="btn btn-secondary btn-sm" onclick="viewCandidate('${escJs(c.id)}')">${t('btn_view') || 'View'}</button>` : ''}
+        ${canEditCand ? `<button class="btn btn-secondary btn-sm" onclick="editCandidate('${escJs(c.id)}')">${t('btn_edit') || 'Edit'}</button>` : ''}
+      </div>`
+    : '';
+
   return `
     <div class="cand-card">
       <div class="cand-name">${esc(c.name)}</div>
@@ -2735,6 +2747,7 @@ function renderCandCard(c, isOnHold = false) {
       ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
       ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
       ${cvButton}
+      ${veButtons}
       <div class="cand-actions">${actions}</div>
     </div>
   `;
@@ -3193,6 +3206,335 @@ async function submitCandidate(reqId) {
       console.error('CV upload failed:', e);
       const f = friendlyError(e);
       toast(f.hint ? `Candidate saved, but ${f.title.toLowerCase()} — ${f.hint}` : `Candidate saved, but CV upload failed: ${f.title}`, true);
+    }
+  }
+}
+
+// ============================================================
+// VIEW / EDIT APPLICANT (v39)
+// ============================================================
+// Read-only detail panel + an editable form, available from every
+// candidate card as it flows through the pipeline. No backend change is
+// needed: the candidates row already carries every editable field and
+// persistCandidateChange() already UPDATEs in place when c._dbId is set.
+
+const CAND_VIEW_ROLES = ['admin','recruiter','hiring_manager','hrbp','head_ta'];
+const CAND_EDIT_ROLES = ['admin','recruiter','head_ta'];
+
+function _stageLabel(stage) {
+  const en = { sourcing: 'Sourcing', screening: 'Screening', interview: 'Interview', preemployment: 'Pre-employment', offer: 'Offer', hired: 'Hired' };
+  const km = { sourcing: 'ស្វែងរក', screening: 'ពិនិត្យ', interview: 'សម្ភាសន៍', preemployment: 'ពិនិត្យមុន', offer: 'ផ្តល់ជូន', hired: 'បានជ្រើសរើស' };
+  return (state.currentLang === 'km' ? km : en)[stage] || stage;
+}
+
+// Map the title-cased in-memory source ("Walk In") back to the dropdown
+// code ("walk_in") — same encoding saveSingleCandidate() writes to the DB.
+function _sourceCode(source) {
+  return (source || '').toLowerCase().replace(/ /g, '_');
+}
+
+function viewCandidate(candId) {
+  if (!CAND_VIEW_ROLES.includes(state.currentMember?.role)) {
+    toast('You do not have permission to view applicant details', true);
+    return;
+  }
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) { toast('Applicant not found', true); return; }
+  const req = state.requisitions.find(r => r.id === c.reqId);
+  const canEdit = CAND_EDIT_ROLES.includes(state.currentMember?.role);
+
+  const row = (label, value) => (value === undefined || value === null || value === '')
+    ? ''
+    : `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${value}</span></div>`;
+
+  const genderLabels = { M: 'Male', F: 'Female', Other: 'Other', PNTS: 'Prefer not to say' };
+  const eduLabels = { high_school: 'High School', diploma: 'Diploma', bachelor: 'Bachelor', master: 'Master', phd: 'PhD' };
+
+  const demoRows = [
+    row('Gender', c.gender ? esc(genderLabels[c.gender] || c.gender) : ''),
+    row('Date of birth', c.dateOfBirth ? formatDate(c.dateOfBirth) : ''),
+    row('Years of experience', (c.yearsExperience === null || c.yearsExperience === undefined || c.yearsExperience === '') ? '' : c.yearsExperience),
+    row('Education level', c.educationLevel ? esc(eduLabels[c.educationLevel] || c.educationLevel) : ''),
+    row('Nationality', c.nationality ? esc(c.nationality) : ''),
+  ].join('');
+
+  const costRows = isHeadOfTA() ? [
+    row('Agency name', c.agencyName ? esc(c.agencyName) : ''),
+    row('Agency fee (USD)', c.agencyFeeUsd != null ? c.agencyFeeUsd : ''),
+    row('Referral bonus (USD)', c.referralBonusUsd != null ? c.referralBonusUsd : ''),
+    row('Other direct cost (USD)', c.directCostUsd != null ? c.directCostUsd : ''),
+  ].join('') : '';
+
+  const cvBlock = c.cvStoragePath
+    ? `<button class="btn btn-secondary btn-sm" onclick="viewCV('${escJs(c._dbId)}')">${t('btn_view_cv') || 'View CV'}</button>`
+    : `<span class="text-muted">${c.cvFilename ? esc(c.cvFilename) + ' — legacy, re-upload via Edit to view' : 'No CV on file'}</span>`;
+
+  openModal(`
+    <div class="modal-header">
+      <h2>${esc(c.name)}</h2>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <p class="modal-desc">${esc(req?.roleTitle || '—')} · ${_stageLabel(c.stage)} · ${daysSince(c.stageChangedAt)}d in stage</p>
+
+    <div>
+      ${row(t('lbl_email') || 'Email', c.email ? esc(c.email) : '<em>—</em>')}
+      ${row(t('lbl_phone') || 'Phone', esc(c.phone || '—'))}
+      ${row(t('lbl_source') || 'Source', esc(c.source || '—'))}
+      ${row('Status', c.status === 'rejected'
+        ? '<span class="badge badge-danger">Rejected</span>'
+        : '<span class="badge badge-success">Active</span>')}
+      ${row('Added', formatDate(c.addedAt))}
+      ${c.stage === 'interview' ? row('Interview step', esc(ivStepLabel(c.interviewStep || 'step_1'))) : ''}
+    </div>
+
+    ${demoRows.trim() ? `<h3 class="mt-2">Demographics</h3><div>${demoRows}</div>` : ''}
+    ${costRows.trim() ? `<h3 class="mt-2">Sourcing cost</h3><div>${costRows}</div>` : ''}
+    ${c.notes ? `<h3 class="mt-2">${t('lbl_notes') || 'Notes'}</h3><p>${esc(c.notes)}</p>` : ''}
+
+    <h3 class="mt-2">${t('lbl_applicant_cv') || 'Applicant CV'}</h3>
+    <div>${cvBlock}</div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_close') || 'Close'}</button>
+      ${canEdit ? `<button class="btn btn-primary" onclick="editCandidate('${escJs(c.id)}')">${t('btn_edit') || 'Edit'}</button>` : ''}
+    </div>
+  `);
+}
+
+async function editCandidate(candId) {
+  if (!CAND_EDIT_ROLES.includes(state.currentMember?.role)) {
+    toast('You do not have permission to edit applicants', true);
+    return;
+  }
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) { toast('Applicant not found', true); return; }
+
+  openModal(`
+    <div class="modal-header"><h2>${t('modal_edit_applicant') || 'Edit applicant'}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p class="modal-desc">${t('modal_edit_applicant_desc') || 'Update applicant details. Pipeline stage is unchanged.'}</p>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_full_name')}</label><input type="text" id="candName" value="${esc(c.name || '')}"></div>
+      <div class="form-group"><label>${t('lbl_email')}</label><input type="email" id="candEmail" value="${esc(c.email || '')}"></div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="required">${t('lbl_phone')}</label><input type="text" id="candPhone" value="${esc(c.phone || '')}" placeholder="+855 12 345 678"></div>
+      <div class="form-group"><label class="required">${t('lbl_source')}</label><select id="candSource"></select></div>
+    </div>
+    <div class="form-group">
+      <label>${t('lbl_applicant_cv') || 'Applicant CV'} <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(${t('txt_optional_replace') || 'optional — choose a file only to replace the current CV'})</span></label>
+      <input type="file" id="candCV" accept=".pdf">
+      <div class="text-xs text-muted" style="margin-top: 0.25rem;">${c.cvFilename ? `${t('txt_current_cv') || 'Current'}: ${esc(c.cvFilename)}` : (t('txt_no_cv') || 'No CV on file')}</div>
+    </div>
+
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Demographics <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — improves diversity reporting)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Gender</label>
+            <select id="candGender">
+              <option value="">— Not specified —</option>
+              <option value="M">Male</option>
+              <option value="F">Female</option>
+              <option value="Other">Other</option>
+              <option value="PNTS">Prefer not to say</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date of birth</label>
+            <input type="date" id="candDOB" max="${new Date(Date.now() - 18*365*86400000).toISOString().slice(0,10)}">
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Years of experience</label>
+            <input type="number" id="candYearsExp" min="0" max="70" step="1" placeholder="e.g. 5">
+          </div>
+          <div class="form-group">
+            <label>Education level</label>
+            <select id="candEducation">
+              <option value="">— Not specified —</option>
+              <option value="high_school">High School</option>
+              <option value="diploma">Diploma</option>
+              <option value="bachelor">Bachelor</option>
+              <option value="master">Master</option>
+              <option value="phd">PhD</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Nationality</label>
+          <input type="text" id="candNationality" placeholder="e.g. Cambodian">
+        </div>
+      </div>
+    </details>
+
+    ${isHeadOfTA() ? `
+    <details style="margin: 0.75rem 0; border: 1px solid var(--line, #e5e7eb); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+      <summary style="cursor: pointer; font-weight: 500; padding: 0.25rem 0;">
+        Sourcing cost <span style="font-weight: 400; color: var(--muted, #6b7280); font-size: 0.85rem;">(optional — Head of TA)</span>
+      </summary>
+      <div style="padding-top: 0.5rem;">
+        <p class="text-xs text-muted" style="margin-bottom: 0.75rem;">
+          Cost data is associated with the source you pick above. Fill the relevant section based on how this candidate came in. Leave blank if no cost.
+        </p>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Agency name</label>
+            <input type="text" id="candAgencyName" placeholder="e.g. ABC Recruitment Co.">
+            <div class="text-xs text-muted">Only if source is "Agency".</div>
+          </div>
+          <div class="form-group">
+            <label>Agency fee (USD)</label>
+            <input type="number" id="candAgencyFee" min="0" step="0.01" placeholder="e.g. 1500">
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Referred by</label>
+            <select id="candReferralEmp">
+              <option value="">— None —</option>
+              ${getActiveEmployeesInScope().slice(0, 200).map(e => `<option value="${e.id}">${esc(e.name_en || e.name_kh || '')} ${e.position_title ? '· ' + esc(e.position_title) : ''}</option>`).join('')}
+            </select>
+            <div class="text-xs text-muted">Only if source is "Referral". Showing first 200 employees.</div>
+          </div>
+          <div class="form-group">
+            <label>Referral bonus (USD)</label>
+            <input type="number" id="candReferralBonus" min="0" step="0.01" placeholder="e.g. 200">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Other direct cost (USD)</label>
+          <input type="number" id="candDirectCost" min="0" step="0.01" placeholder="e.g. 50 (background check, etc.)">
+        </div>
+      </div>
+    </details>
+    ` : ''}
+
+    <div class="form-group"><label>${t('lbl_notes')}</label><textarea id="candNotes" rows="3">${esc(c.notes || '')}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('btn_cancel')}</button>
+      <button class="btn btn-primary" onclick="submitEditCandidate('${escJs(c.id)}')">${t('btn_save_changes') || t('btn_save') || 'Save changes'}</button>
+    </div>
+  `);
+
+  // Pre-fill the source dropdown with the candidate's current source selected.
+  const sourceSelect = document.getElementById('candSource');
+  await populateSourceDropdown(sourceSelect, state.currentLang || 'en', _sourceCode(c.source));
+
+  // Pre-fill the remaining controls (set after openModal so the elements exist).
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el && val != null && val !== '') el.value = val; };
+  setVal('candGender', c.gender);
+  setVal('candDOB', c.dateOfBirth);
+  setVal('candYearsExp', (c.yearsExperience === null || c.yearsExperience === undefined) ? '' : c.yearsExperience);
+  setVal('candEducation', c.educationLevel);
+  setVal('candNationality', c.nationality);
+  setVal('candAgencyName', c.agencyName);
+  setVal('candAgencyFee', c.agencyFeeUsd);
+  setVal('candReferralEmp', c.referralEmployeeId);
+  setVal('candReferralBonus', c.referralBonusUsd);
+  setVal('candDirectCost', c.directCostUsd);
+}
+
+async function submitEditCandidate(candId) {
+  if (!CAND_EDIT_ROLES.includes(state.currentMember?.role)) {
+    toast('You do not have permission to edit applicants', true);
+    return;
+  }
+  const c = state.candidates.find(x => x.id === candId);
+  if (!c) { toast('Applicant not found', true); return; }
+
+  const name = document.getElementById('candName').value.trim();
+  const email = document.getElementById('candEmail').value.trim();
+  const phone = document.getElementById('candPhone').value.trim();
+  const source = document.getElementById('candSource').value;
+  const cvFile = document.getElementById('candCV').files[0];
+  const notes = document.getElementById('candNotes').value;
+  const demoEl = id => document.getElementById(id);
+  const gender = demoEl('candGender')?.value || null;
+  const dob = demoEl('candDOB')?.value || null;
+  const yearsExpRaw = demoEl('candYearsExp')?.value;
+  const yearsExp = (yearsExpRaw === '' || yearsExpRaw == null) ? null : parseInt(yearsExpRaw, 10);
+  const education = demoEl('candEducation')?.value || null;
+  const nationality = (demoEl('candNationality')?.value || '').trim() || null;
+  const agencyName = (demoEl('candAgencyName')?.value || '').trim() || null;
+  const agencyFeeRaw = demoEl('candAgencyFee')?.value;
+  const agencyFeeUsd = (agencyFeeRaw === '' || agencyFeeRaw == null) ? null : parseFloat(agencyFeeRaw);
+  const referralEmployeeId = demoEl('candReferralEmp')?.value || null;
+  const referralBonusRaw = demoEl('candReferralBonus')?.value;
+  const referralBonusUsd = (referralBonusRaw === '' || referralBonusRaw == null) ? null : parseFloat(referralBonusRaw);
+  const directCostRaw = demoEl('candDirectCost')?.value;
+  const directCostUsd = (directCostRaw === '' || directCostRaw == null) ? null : parseFloat(directCostRaw);
+
+  // Name + phone stay required. CV is OPTIONAL on edit (only validated if a
+  // replacement was chosen) — the existing CV is kept when none is picked.
+  if (!name || !phone) { alert('Fill required fields (name, phone)'); return; }
+  if (cvFile) {
+    if (cvFile.type !== 'application/pdf') { alert('CV must be PDF'); return; }
+    const MAX_CV_BYTES = 5 * 1024 * 1024;
+    if (cvFile.size > MAX_CV_BYTES) {
+      const sizeMB = (cvFile.size / 1024 / 1024).toFixed(1);
+      alert(`CV file is ${sizeMB} MB. Please upload a smaller PDF (max 5 MB).\n\nTip: Use a free online PDF compressor like ilovepdf.com or smallpdf.com.`);
+      return;
+    }
+  }
+  // Duplicate-email guard — only when the email changed to one another
+  // candidate already uses (the DB also enforces this, but warn early).
+  if (email && email.toLowerCase() !== (c.email || '').toLowerCase()) {
+    const dup = state.candidates.find(x => x.id !== c.id && (x.email || '').toLowerCase() === email.toLowerCase());
+    if (dup) {
+      const ok = confirm(`Another candidate with email "${email}" already exists (${dup.name}).\n\nClick OK to save anyway, or Cancel to review first.`);
+      if (!ok) return;
+    }
+  }
+
+  // Snapshot editable fields so we can roll back if the save fails.
+  const snap = {
+    name: c.name, email: c.email, phone: c.phone, source: c.source, notes: c.notes,
+    gender: c.gender, dateOfBirth: c.dateOfBirth, yearsExperience: c.yearsExperience,
+    educationLevel: c.educationLevel, nationality: c.nationality,
+    agencyName: c.agencyName, agencyFeeUsd: c.agencyFeeUsd,
+    referralEmployeeId: c.referralEmployeeId, referralBonusUsd: c.referralBonusUsd,
+    directCostUsd: c.directCostUsd, cvFilename: c.cvFilename,
+  };
+
+  Object.assign(c, {
+    name, email, phone, source, notes,
+    gender, dateOfBirth: dob, yearsExperience: yearsExp,
+    educationLevel: education, nationality,
+    agencyName, agencyFeeUsd, referralEmployeeId, referralBonusUsd, directCostUsd,
+  });
+  // Set the new filename before persist so the candidates row reflects it even
+  // before the storage upload below completes (same pattern as submitCandidate).
+  if (cvFile) c.cvFilename = cvFile.name;
+
+  const ok = await persistCandidateChange(c, 'Applicant details updated');
+  if (!ok) { Object.assign(c, snap); return; }  // roll back on failure
+
+  // Replacement CV upload — mirrors submitCandidate's storage path/columns.
+  if (cvFile && c._dbId && state.currentMember?.tenant_id) {
+    try {
+      const ts = Date.now();
+      const safeName = cvFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `cvs/${state.currentMember.tenant_id}/${c._dbId}/${ts}-${safeName}`;
+      const { error: upErr } = await sb.storage
+        .from('hire-medha')
+        .upload(storagePath, cvFile, { contentType: 'application/pdf', upsert: false });
+      if (upErr) throw upErr;
+      const { error: updErr } = await sb
+        .from('candidates')
+        .update({ cv_storage_path: storagePath, cv_uploaded_at: new Date().toISOString(), cv_filename: cvFile.name })
+        .eq('id', c._dbId);
+      if (updErr) throw updErr;
+      c.cvStoragePath = storagePath;
+      c.cvUploadedAt = new Date().toISOString();
+      render();
+    } catch (e) {
+      console.error('CV replace failed:', e);
+      const f = friendlyError(e);
+      toast(f.hint ? `Details saved, but ${f.title.toLowerCase()} — ${f.hint}` : `Details saved, but CV upload failed: ${f.title}`, true);
     }
   }
 }
@@ -5431,6 +5773,8 @@ export {
   _readChannelCostFromForm,
   _renderChannelCostModal,
   addCandidate,
+  viewCandidate,
+  editCandidate,
   addFeedback,
   advanceInterviewStep,
   regressInterviewStep,
@@ -5523,6 +5867,7 @@ export {
   submitAddChannelCost,
   submitCancel,
   submitCandidate,
+  submitEditCandidate,
   submitEditChannelCost,
   submitFeedback,
   submitHold,
