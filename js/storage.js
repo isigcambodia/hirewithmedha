@@ -1016,6 +1016,24 @@ export function friendlyError(e) {
     return { title: 'This record already exists', hint: 'Please check for duplicates and try again.' };
   }
 
+  // 23514 = check constraint violation; 22P02 = invalid enum input.
+  // Most common cause: candidates.source still has a legacy CHECK/enum
+  // that doesn't include newer applicant_sources codes (walk_in, etc.).
+  if (code === '23514' || code === '22P02' ||
+      msg.includes('violates check constraint') ||
+      msg.includes('invalid input value for enum')) {
+    if (msg.includes('source')) {
+      return {
+        title: 'This applicant source is not allowed by the database yet',
+        hint: 'An admin needs to run docs/v38_applicant_source_fix.sql so candidates.source accepts every code in applicant_sources.'
+      };
+    }
+    return {
+      title: 'That value is not allowed by the database',
+      hint: 'Please pick a different option and try again.'
+    };
+  }
+
   // Storage size limit
   if (msg.includes('exceeded the maximum allowed size') || msg.includes('payload too large')) {
     return {
