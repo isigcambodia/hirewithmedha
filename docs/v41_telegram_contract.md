@@ -9,15 +9,34 @@
 
 Bot: **@ISIGROUP_TA_BOT** · Tenant: `5cd82d77-fe6e-4633-8f87-813b2cc5972c`
 
+## Link code — Edge Function (what the client calls)
+
+`supabase.functions.invoke('telegram-link-code', { body: {} })` →
+
+```json
+{ "code": "K3R7XQ", "bot_username": "ISIGROUP_TA_BOT",
+  "deep_link": "https://t.me/ISIGROUP_TA_BOT?start=K3R7XQ",
+  "instructions": "…", "already_linked": false, "linked_at": null }
+```
+
+Codes are 6 chars, safe alphabet `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`
+(no 0/O, 1/I), valid 15 min. After showing the code/deep link the
+client **polls `profiles.telegram_chat_id` every 3s** (stop after 2
+min or on navigate-away) to flip to the Connected state — there is no
+realtime push for linking.
+
 ## RPCs (callable by the `authenticated` role)
 
 | RPC | Args | Purpose |
 |---|---|---|
-| `telegram_mint_link_token()` | – | Returns a one-time, 15-min link code. Frontend builds `https://t.me/ISIGROUP_TA_BOT?start=<code>` and also shows `/start <code>` for manual entry. |
 | `telegram_unlink()` | – | Clears the caller's Telegram link. |
 | `telegram_toggle_notifications(enabled)` | `enabled boolean` | Pause/resume delivery for the caller. |
 
-Backend-internal RPCs (not called by the client): `telegram_get_pending_notifications(batch_size)`, `telegram_mark_notification(id, status, error)`, `telegram_cleanup_old_data()`.
+`telegram_mint_link_token()` still exists but the client uses the
+`telegram-link-code` Edge Function instead (it also reports
+`already_linked`). Backend-internal RPCs (not called by the client):
+`telegram_get_pending_notifications`, `telegram_mark_notification`,
+`telegram_cleanup_old_data`.
 
 ## Tables
 
