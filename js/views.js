@@ -2449,8 +2449,8 @@ function renderRecruiter() {
         <div class="metric"><div class="metric-label">${t('metric_offers_out')}</div><div class="metric-value">${myCands.filter(c => c.stage === 'offer').length}</div><div class="metric-sub">${t('txt_awaiting_response')}</div></div>
       </div>
       
-      <div class="panel">
-        <div class="panel-header"><div class="panel-title">${t('sec_my_reqs')}</div></div>
+      <details class="collapsible" open>
+        <summary>${t('sec_my_reqs')} <span class="text-xs text-muted" style="margin-left:0.35rem;">${myReqs.length}</span></summary>
         ${myReqs.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_no_assign')}</div></div>` : `
           <table class="table">
             <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_grade')}</th><th>${t('th_target_fill')}</th><th>${t('th_remaining')}</th><th>${t('th_pipeline')}</th></tr></thead>
@@ -2471,53 +2471,43 @@ function renderRecruiter() {
             }).join('')}</tbody>
           </table>
         `}
-      </div>
-      
+      </details>
+
       ${heldReqs.length > 0 ? `
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">${t('metric_on_hold')}</div>
-            <span class="text-xs text-muted">${heldReqs.length}</span>
-          </div>
-          <div class="panel-body no-pad">
-            <table class="table">
-              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_status')}</th></tr></thead>
-              <tbody>${heldReqs.map(r => `
+        <details class="collapsible">
+          <summary>${t('metric_on_hold')} <span class="text-xs text-muted" style="margin-left:0.35rem;">${heldReqs.length}</span></summary>
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_status')}</th></tr></thead>
+            <tbody>${heldReqs.map(r => `
+              <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
+                <td><span class="req-id">${esc(r.id)}</span></td>
+                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
+                <td>${getRequesterDisplay(r)}</td>
+                <td>${statusBadge(r.status)}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </details>
+      ` : ''}
+
+      ${closedReqs.length > 0 ? `
+        <details class="collapsible">
+          <summary>${t('metric_closed') || 'Closed'} — ${t('sec_history') || 'History'} <span class="text-xs text-muted" style="margin-left:0.35rem;">${closedReqs.length}</span></summary>
+          <table class="table">
+            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_closed_date') || 'Closed'}</th></tr></thead>
+            <tbody>${closedReqs
+              .slice()
+              .sort((a, b) => new Date(b.closedAt || b.updatedAt || 0) - new Date(a.closedAt || a.updatedAt || 0))
+              .map(r => `
                 <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
                   <td><span class="req-id">${esc(r.id)}</span></td>
                   <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
                   <td>${getRequesterDisplay(r)}</td>
-                  <td>${statusBadge(r.status)}</td>
+                  <td>${formatDate(r.closedAt || r.updatedAt)}</td>
                 </tr>
               `).join('')}</tbody>
-            </table>
-          </div>
-        </div>
-      ` : ''}
-
-      ${closedReqs.length > 0 ? `
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">${t('metric_closed') || 'Closed'} — ${t('sec_history') || 'History'}</div>
-            <span class="text-xs text-muted">${closedReqs.length}</span>
-          </div>
-          <div class="panel-body no-pad">
-            <table class="table">
-              <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_closed_date') || 'Closed'}</th></tr></thead>
-              <tbody>${closedReqs
-                .slice()
-                .sort((a, b) => new Date(b.closedAt || b.updatedAt || 0) - new Date(a.closedAt || a.updatedAt || 0))
-                .map(r => `
-                  <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
-                    <td><span class="req-id">${esc(r.id)}</span></td>
-                    <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
-                    <td>${getRequesterDisplay(r)}</td>
-                    <td>${formatDate(r.closedAt || r.updatedAt)}</td>
-                  </tr>
-                `).join('')}</tbody>
-            </table>
-          </div>
-        </div>
+          </table>
+        </details>
       ` : ''}
     </div>
   `;
