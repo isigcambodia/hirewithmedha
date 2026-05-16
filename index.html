@@ -56,6 +56,7 @@
       <div id="onboardingNav" style="display: none;"></div>
       <div id="employeesNav" style="display: none;"></div>
       <div id="adminNav" style="display: none;"></div>
+      <div id="notificationsNav" style="display: none;"></div>
       <div class="user-chip" id="userChip"></div>
     </div>
   </div>
@@ -179,6 +180,7 @@ import { HWM_BUILD, HWM_DEBUG, dbg } from './js/helpers.js';
 import { setOnDataChanged, setNavigateTo, loadEverything, loadUserBuIds } from './js/storage.js';
 import * as Utils from './js/utils.js';
 import * as Views from './js/views.js';
+import * as Notify from './js/notifications.js';
 const { render, renderHeader, setView } = Views;
 
 dbg('%cISI Group Talent', 'color:#011e41;font-weight:600;font-size:14px', `build ${HWM_BUILD}`);
@@ -296,6 +298,9 @@ async function bootAfterAuth() {
   // v36 — fetch which BUs this user is allowed to see; drives the new
   // Employees module's persona-aware UI (BU column, BU filter dropdown).
   await loadUserBuIds();
+  // v41 — read this user's Telegram link state (best effort; tolerates
+  // the migration not yet being run).
+  await Notify.loadTelegramStatus();
 
   // Language pref
   const savedLang = localStorage.getItem('hwm_lang') || 'en';
@@ -331,7 +336,7 @@ init();
 // closeModal is the most-called offender — it lives in utils.js and is
 // referenced by ~30 onclick attributes across the app.
 // ============================================================
-Object.assign(window, Utils, Views);
+Object.assign(window, Utils, Views, Notify);
 </script>
 </body>
 </html>

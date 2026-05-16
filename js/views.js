@@ -25,6 +25,7 @@ import {
   deactivateEmployee, reactivateEmployee, autoCreateEmployeeForHire, persistOfferAccepted,
 } from './storage.js';
 import { populateSourceDropdown, loadApplicantSources } from './applicant_sources_integration.js';
+import { renderNotificationsView } from './notifications.js';
 import {
   isHeadOfTA, getBuName, canRaiseReqOnBehalf, getExecAuthorities, detectExecHireType,
   getActiveEmployeesInScope,
@@ -167,6 +168,19 @@ function renderHeader() {
       employeesNav.style.display = 'none';
       employeesNav.innerHTML = '';
     }
+  }
+
+  // Notifications nav — available to every logged-in user (each person
+  // manages their own Telegram link + preference).
+  const notificationsNav = document.getElementById('notificationsNav');
+  if (notificationsNav) {
+    notificationsNav.style.display = '';
+    const onNotif = state.currentView === 'notifications';
+    notificationsNav.innerHTML = `
+      <button class="role-btn ${onNotif ? 'active' : ''}" onclick="setView('${onNotif ? 'dashboard' : 'notifications'}')" style="margin-left: 0.5rem;" title="${t('nav_notifications') || 'Notifications'}">
+        ${onNotif ? '← ' + (t('btn_back_dash') || 'Dashboard') : (t('nav_notifications') || 'Notifications')}
+      </button>
+    `;
   }
 
   // ⭐ User chip now shows the REAL logged-in user's name, not the hardcoded USERS[0].
@@ -5926,6 +5940,7 @@ function render() {
   if (state.currentView === 'channel_costs') { renderChannelCosts(); return; }
   if (state.currentView === 'exec_authority') { renderExecAuthority(); return; }
   if (state.currentView === 'employees') { renderEmployees(); return; }
+  if (state.currentView === 'notifications') { renderNotificationsView(); return; }
   // The new req form is shared across roles that can raise reqs:
   // requester (their own), HRBP / Head of TA (on behalf of an exec), admin.
   // Centralizing the render here means every eligible role gets the same form.
