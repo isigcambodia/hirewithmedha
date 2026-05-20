@@ -4205,8 +4205,8 @@ function renderJDLibrary() {
       _functionName: state.deptMaps.byId[r.function_id]?.name || '',
       _subFunctionName: state.deptMaps.byId[r.sub_function_id]?.name || '',
     }));
-  // Distinct functions for the filter dropdown
-  const functionsList = [...new Set(allRoles.map(r => r._functionName).filter(Boolean))].sort();
+  // Function filter dropdown — driven by lookup_functions table (same source as req form)
+  const functionsList = state.lookups.functions.map(f => f.name);
   // Apply filters
   const search = jdLibFilters.search.toLowerCase();
   const filtered = allRoles.filter(r => {
