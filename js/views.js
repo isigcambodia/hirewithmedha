@@ -12,7 +12,7 @@ import {
   generateReqId, generateCandidateId,
 } from './helpers.js';
 import {
-  ORG_STRUCTURE, EXISTING_ROLES, ROLES, RESOURCE_TYPES, STATUS_CONFIG, ICONS,
+  ROLES, RESOURCE_TYPES, STATUS_CONFIG, ICONS,
 } from './constants.js';
 import { TRANSLATIONS, STATUS_LABELS_KM, t, getStatusLabel } from './i18n.js';
 import {
@@ -455,7 +455,7 @@ function renderNewReqForm() {
             <label class="required">${t('lbl_function')}</label>
             <select id="function" required onchange="updateSubFunctions()">
               <option value="">${t('ph_select_fn')}</option>
-              ${Object.keys(ORG_STRUCTURE).map(f => `<option value="${f}">${f}</option>`).join('')}
+              ${(state.lookups?.functions || []).map(f => `<option value="${esc(f.name)}">${esc(f.name)}</option>`).join('')}
             </select>
           </div>
           <div class="form-grid-2">
@@ -477,32 +477,29 @@ function renderNewReqForm() {
         <div class="form-section">
           <div class="form-section-title">${t('th_role')}</div>
           <div class="form-section-desc">${t('ph_select_role')}</div>
-          
-          <div class="form-group">
-            <label class="required">${t('th_role')}</label>
-            <select id="roleSelect" onchange="toggleNewRole()">
-              <option value="">${t('ph_select_role')}</option>
-              ${[...EXISTING_ROLES].sort((a,b) => a.title.localeCompare(b.title) || (parseInt(a.grade, 10) || 0) - (parseInt(b.grade, 10) || 0)).map(r => `<option value="${r.id}">${r.title} — ${r.function} ${r.grade}</option>`).join('')}
-              <option value="NEW">${t('ph_new_role')}</option>
-            </select>
-          </div>
-          
-          <div id="newRoleFields" class="hidden">
-            <div class="form-grid-2">
-              <div class="form-group">
-                <label class="required">${t('lbl_new_role_title')}</label>
-                <input type="text" id="newRoleTitle" placeholder="${t('ph_new_role_ex')}">
-              </div>
-              <div class="form-group">
-                <label class="required">${t('lbl_proposed_grade')}</label>
-                <select id="newRoleGrade">
-                  <option value="">${t('ph_select_grade')}</option>
-                  ${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}">${g}</option>`).join('')}
-                </select>
-              </div>
+
+          <!-- v42 — type-ahead role picker. 186 job titles is too long for a plain
+               <select>, so we use an <input> bound to a <datalist>; the browser
+               handles substring filtering as the user types. A title not in the
+               list is treated as a NEW role proposal (no extra UI toggle needed). -->
+          <datalist id="roleOptions">
+            ${(state.lookups?.jobTitles || []).map(jt => `<option value="${esc(jt.name).replace(/"/g, '&quot;')}"></option>`).join('')}
+          </datalist>
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="required">${t('th_role')}</label>
+              <input type="text" id="roleSelect" list="roleOptions" oninput="toggleNewRole()" placeholder="${t('ph_select_role')}" autocomplete="off" required>
+              <div class="form-hint" id="roleNewHint" style="display:none; color: var(--ink-3);">${t('hint_new_role') || 'Not in the list — will be proposed as a new role.'}</div>
+            </div>
+            <div class="form-group">
+              <label class="required">${t('lbl_proposed_grade')}</label>
+              <select id="newRoleGrade" required>
+                <option value="">${t('ph_select_grade')}</option>
+                ${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}">${g}</option>`).join('')}
+              </select>
             </div>
           </div>
-          
+
           <div class="form-group" id="jdBlock">
             <label class="required">${t('lbl_jd')}</label>
             <!-- Rendered dynamically by toggleNewRole() based on whether the
@@ -612,31 +609,48 @@ function renderNewReqForm() {
   `;
 }
 
+// v42 — cascade uses lookup_functions → lookup_departments (filtered by
+// function_id) → lookup_sections (filtered by department_id). Dropdown values
+// stay as the human-readable name (the column the requisitions table stores),
+// but we look up the matching lookup row to get its id for the next level.
 function updateSubFunctions() {
-  const fn = document.getElementById('function').value;
+  const fnName = document.getElementById('function').value;
   const sub = document.getElementById('subFunction');
   sub.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
-  sub.disabled = !fn;
-  if (fn && ORG_STRUCTURE[fn]) Object.keys(ORG_STRUCTURE[fn]).forEach(s => sub.innerHTML += `<option value="${s}">${s}</option>`);
+  sub.disabled = !fnName;
+  if (fnName) {
+    const fn = (state.lookups?.functions || []).find(f => f.name === fnName);
+    if (fn) {
+      const depts = (state.lookups?.departments || []).filter(d => d.function_id === fn.id);
+      depts.forEach(d => { sub.innerHTML += `<option value="${esc(d.name)}">${esc(d.name)}</option>`; });
+    }
+  }
   const unit = document.getElementById('unit');
   unit.innerHTML = `<option value="">${t('ph_select_sub')}</option>`;
   unit.disabled = true;
 }
 function updateUnits() {
-  const fn = document.getElementById('function').value;
-  const sub = document.getElementById('subFunction').value;
+  const subName = document.getElementById('subFunction').value;
   const unit = document.getElementById('unit');
   unit.innerHTML = `<option value="">${t('ph_select_unit')}</option>`;
-  const sections = (fn && sub && ORG_STRUCTURE[fn]?.[sub]) || [];
+  const dept = subName ? (state.lookups?.departments || []).find(d => d.name === subName) : null;
+  const sections = dept ? (state.lookups?.sections || []).filter(s => s.department_id === dept.id) : [];
   // Sections are optional and only exist for a few departments; disable the
   // dropdown when none are defined so the requester knows it's intentionally empty.
   unit.disabled = sections.length === 0;
-  sections.forEach(u => unit.innerHTML += `<option value="${u}">${u}</option>`);
+  sections.forEach(s => { unit.innerHTML += `<option value="${esc(s.name)}">${esc(s.name)}</option>`; });
 }
+// v42 — the role input is now a free-text autocomplete (datalist), not a
+// <select>. A typed title that matches a row in lookup_job_titles is an
+// existing role; anything else is implicitly a proposal for a new title.
+// We surface that distinction via the small hint under the input and pass
+// the typed title through to renderJDSlot for the JD-library lookup.
 function toggleNewRole() {
-  const roleSelect = document.getElementById('roleSelect').value;
-  document.getElementById('newRoleFields').classList.toggle('hidden', roleSelect !== 'NEW');
-  renderJDSlot(roleSelect);
+  const typed = (document.getElementById('roleSelect')?.value || '').trim();
+  const isKnown = !!(state.lookups?.jobTitles || []).find(jt => jt.name === typed);
+  const hint = document.getElementById('roleNewHint');
+  if (hint) hint.style.display = (typed && !isKnown) ? '' : 'none';
+  renderJDSlot(typed);
 }
 
 // Pre-fill the new-req form with existing req values when in edit mode.
@@ -658,18 +672,14 @@ function prefillEditForm(reqId) {
       if (unitEl && r.unit) unitEl.value = r.unit;
     }
   }
-  // Role
+  // Role — v42: roleSelect is now a text input bound to a datalist of titles.
+  // Pre-fill with the requisition's stored title and grade; toggleNewRole()
+  // syncs the "new role" hint + JD slot off the typed value.
   const roleEl = document.getElementById('roleSelect');
   if (roleEl) {
-    if (r.roleId) {
-      roleEl.value = r.roleId;
-    } else if (r.isNewRole) {
-      roleEl.value = 'NEW';
-      const titleEl = document.getElementById('newRoleTitle');
-      const gradeEl = document.getElementById('newRoleGrade');
-      if (titleEl) titleEl.value = r.roleTitle || '';
-      if (gradeEl) gradeEl.value = r.grade || '';
-    }
+    roleEl.value = r.roleTitle || '';
+    const gradeEl = document.getElementById('newRoleGrade');
+    if (gradeEl) gradeEl.value = r.grade || '';
     toggleNewRole();
   }
   // Replacement / planned radios
@@ -747,19 +757,20 @@ function cancelRevision() {
 // Render the JD section in the new-req form. If the selected role has a
 // standard JD in the library, show a "Attached from library" notice with a
 // View button (preview before submit). Otherwise show the manual upload input.
-function renderJDSlot(roleSelectValue) {
+// v42 — the argument is now a job title (text) rather than a role legacy id;
+// we look up role_library by title to see whether a standard JD is on file.
+function renderJDSlot(roleTitle) {
   const slot = document.getElementById('jdSlot');
   if (!slot) return;
-  // No role selected yet, or user is creating a NEW role: standard JD doesn't
-  // exist, so show the manual upload as today.
-  if (!roleSelectValue || roleSelectValue === 'NEW') {
+  // No role typed yet → show the manual upload as today.
+  if (!roleTitle) {
     slot.innerHTML = `
       <input type="file" id="jdFile" accept=".pdf">
       <div class="form-hint">${t('hint_jd')}</div>
     `;
     return;
   }
-  const role = state.roleLibMaps.byLegacyId[roleSelectValue];
+  const role = state.roleLibMaps.byTitle?.[roleTitle];
   if (role && role.standard_jd_path) {
     // Standard JD available — auto-attach, no upload input. Requester sees a
     // "from library" indicator and can click View to preview before submitting.
@@ -875,8 +886,22 @@ async function submitNewReq() {
     return;
   }
 
-  const roleSelect = document.getElementById('roleSelect').value;
-  if (!roleSelect) { alert('Please select a role'); return; }
+  // v42 — role picker is now a free-text title (autocomplete via datalist on
+  // lookup_job_titles). A title found in the lookup is an existing role; one
+  // that isn't is a NEW role proposal. Grade is always asked separately since
+  // lookup_job_titles doesn't carry it.
+  const roleTitle = (document.getElementById('roleSelect')?.value || '').trim();
+  if (!roleTitle) { alert('Please select a role'); return; }
+  const grade = document.getElementById('newRoleGrade')?.value || '';
+  if (!grade) { alert('Please select a grade'); return; }
+  const isKnownTitle = !!(state.lookups?.jobTitles || []).find(jt => jt.name === roleTitle);
+  const isNewRole = !isKnownTitle;
+  // Backfill the legacy roleId from role_library if there's a title match, so
+  // existing FK-based queries still resolve. If the title isn't in role_library,
+  // roleId stays null — the storage layer treats it like a new-role submission.
+  const matchedLib = state.roleLibMaps?.byTitle?.[roleTitle] || null;
+  const roleId = matchedLib?.legacyId || null;
+
   const buId = document.getElementById('bu')?.value || '';
   if (!buId) { alert('Please select a Business Unit'); return; }
   // Exec workflow — only HRBP/Head of TA see this field; for others it's null.
@@ -890,7 +915,7 @@ async function submitNewReq() {
   // the library path. Otherwise, the file input is present and required.
   // EDIT MODE: if no new JD file is selected and the existing req already has
   // a JD attached, we keep the existing one. Otherwise apply the same rules.
-  const selectedRoleLib = (roleSelect && roleSelect !== 'NEW') ? state.roleLibMaps.byLegacyId[roleSelect] : null;
+  const selectedRoleLib = matchedLib;
   const useLibraryJD = !!(selectedRoleLib && selectedRoleLib.standard_jd_path);
   const jdFileEl = document.getElementById('jdFile');
   const jdFile = jdFileEl ? jdFileEl.files[0] : null;
@@ -898,17 +923,6 @@ async function submitNewReq() {
   if (!useLibraryJD && !keepExistingJD) {
     if (!jdFile) { alert('Please upload JD'); return; }
     if (jdFile.type !== 'application/pdf') { alert('JD must be PDF'); return; }
-  }
-  
-  let roleTitle, grade, isNewRole, roleId;
-  if (roleSelect === 'NEW') {
-    roleTitle = document.getElementById('newRoleTitle').value.trim();
-    grade = document.getElementById('newRoleGrade').value;
-    if (!roleTitle || !grade) { alert('Fill new role details'); return; }
-    isNewRole = true; roleId = null;
-  } else {
-    const role = EXISTING_ROLES.find(r => r.id === roleSelect);
-    roleTitle = role.title; grade = role.grade; isNewRole = false; roleId = role.id;
   }
   
   const sameHM = document.querySelector('input[name="sameHM"]:checked').value;

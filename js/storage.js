@@ -318,7 +318,7 @@ export async function loadEverything() {
   const t = state.currentTenantId;
 
   // Parallel fetch
-  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes, businessUnitsRes] = await Promise.all([
+  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes, businessUnitsRes, lookupFnRes, lookupDeptRes, lookupSecRes, lookupTitleRes] = await Promise.all([
     sb.from('departments').select('*').eq('tenant_id', t),
     sb.from('role_library').select('*').eq('tenant_id', t).eq('is_active', true),
     sb.from('requisitions').select('*').eq('tenant_id', t).is('deleted_at', null).order('created_at'),
@@ -344,7 +344,28 @@ export async function loadEverything() {
     // Business Units — top-level dimension for cross-BU reporting (e.g. ISI Steel, Brown Coffee)
     // Sort by sort_order (ISI Group=1 first), then alphabetical by name.
     sb.from('business_units').select('*').eq('tenant_id', t).is('deleted_at', null).eq('is_active', true).order('sort_order').order('name'),
+    // v42 — master lookup tables that drive the requisition form's
+    // Function/Department/Section cascade and the flat Role list. Inactive rows
+    // are filtered server-side so the dropdowns never surface deprecated values.
+    sb.from('lookup_functions').select('id, name, sort_order').eq('tenant_id', t).eq('is_active', true).order('sort_order'),
+    sb.from('lookup_departments').select('id, name, function_id, sort_order').eq('tenant_id', t).eq('is_active', true).order('sort_order'),
+    sb.from('lookup_sections').select('id, name, department_id, sort_order').eq('tenant_id', t).eq('is_active', true).order('sort_order'),
+    // 186 job titles — alphabetical is more useful than sort_order for a long flat list.
+    sb.from('lookup_job_titles').select('id, name').eq('tenant_id', t).eq('is_active', true).order('name'),
   ]);
+
+  // v42 — stash the lookup rows for views.js to read at form render time.
+  state.lookups = {
+    functions:  lookupFnRes?.data    || [],
+    departments: lookupDeptRes?.data || [],
+    sections:   lookupSecRes?.data   || [],
+    jobTitles:  lookupTitleRes?.data || [],
+  };
+  dbg('[hwm] lookups loaded:',
+    state.lookups.functions.length, 'functions,',
+    state.lookups.departments.length, 'departments,',
+    state.lookups.sections.length, 'sections,',
+    state.lookups.jobTitles.length, 'job titles');
 
   // Build the real-users lookup from tenant_members + profiles
   state.realUsersByUuid = {};

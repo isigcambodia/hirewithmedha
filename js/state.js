@@ -25,6 +25,11 @@ export const state = {
   deptMaps: { byName: {}, byId: {} },
   roleLibMaps: { byTitle: {}, byId: {} },
   employeeMaps: { byId: {}, byCode: {}, byUserId: {}, list: [] },
+  // v42 — master lookup tables for the requisition form (Function/Department/
+  // Section cascade + flat Job Title list). Populated by loadEverything().
+  // Each entry is {id, name}; departments carry function_id; sections carry
+  // department_id. Sorted by sort_order on load (job titles by name).
+  lookups: { functions: [], departments: [], sections: [], jobTitles: [] },
   businessUnits: [],
   // v36 BU scoping — uuids of BUs visible to the current user. Populated at
   // login from the user_business_unit_ids() Postgres helper. Group-scoped
