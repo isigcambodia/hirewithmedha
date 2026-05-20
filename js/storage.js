@@ -318,7 +318,7 @@ export async function loadEverything() {
   const t = state.currentTenantId;
 
   // Parallel fetch
-  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes, businessUnitsRes, lookupFnRes, lookupDeptRes, lookupSecRes, lookupTitleRes] = await Promise.all([
+  const [deptsRes, rolesRes, reqsRes, candsRes, appsRes, ivRes, ivfRes, reqRecRes, actRes, membersRes, empsRes, onboardingsRes, channelCostsRes, businessUnitsRes, lookupFnRes, lookupDeptRes, lookupSecRes, lookupTitleRes, lookupGradeRes] = await Promise.all([
     sb.from('departments').select('*').eq('tenant_id', t),
     sb.from('role_library').select('*').eq('tenant_id', t).eq('is_active', true),
     sb.from('requisitions').select('*').eq('tenant_id', t).is('deleted_at', null).order('created_at'),
@@ -352,6 +352,8 @@ export async function loadEverything() {
     sb.from('lookup_sections').select('id, name, department_id, sort_order').eq('tenant_id', t).eq('is_active', true).order('sort_order'),
     // 186 job titles — alphabetical is more useful than sort_order for a long flat list.
     sb.from('lookup_job_titles').select('id, name').eq('tenant_id', t).eq('is_active', true).order('name'),
+    // Grade levels (1–9, 11, 12, 14, 15) — sort_order keeps them numeric.
+    sb.from('lookup_grades').select('id, name, sort_order').eq('tenant_id', t).eq('is_active', true).order('sort_order'),
   ]);
 
   // v42 — stash the lookup rows for views.js to read at form render time.
@@ -360,12 +362,14 @@ export async function loadEverything() {
     departments: lookupDeptRes?.data || [],
     sections:   lookupSecRes?.data   || [],
     jobTitles:  lookupTitleRes?.data || [],
+    grades:     lookupGradeRes?.data || [],
   };
   dbg('[hwm] lookups loaded:',
     state.lookups.functions.length, 'functions,',
     state.lookups.departments.length, 'departments,',
     state.lookups.sections.length, 'sections,',
-    state.lookups.jobTitles.length, 'job titles');
+    state.lookups.jobTitles.length, 'job titles,',
+    state.lookups.grades.length, 'grades');
 
   // Build the real-users lookup from tenant_members + profiles
   state.realUsersByUuid = {};
