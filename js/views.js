@@ -495,7 +495,7 @@ function renderNewReqForm() {
               <label class="required">${t('lbl_proposed_grade')}</label>
               <select id="newRoleGrade" required>
                 <option value="">${t('ph_select_grade')}</option>
-                ${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}">${g}</option>`).join('')}
+                ${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}">${esc(g.name)}</option>`).join('')}
               </select>
             </div>
           </div>
@@ -4101,7 +4101,7 @@ function prepareOffer(candId) {
     <p class="modal-desc"><strong>${esc(c.name)}</strong> — ${esc(r.roleTitle)}</p>
     <div class="form-grid-2">
       <div class="form-group"><label class="required">${t('lbl_salary')}</label><input type="number" id="offSal" value="${e.salary || ''}"></div>
-      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].map(g => `<option value="${g}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g.name ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
     </div>
     <div class="form-group"><label class="required">${t('lbl_start_date')}</label><input type="date" id="offStart" value="${e.startDate || ''}"></div>
     <div class="form-group"><label>${t('lbl_benefits')}</label><textarea id="offBen" rows="3">${e.benefits || ''}</textarea></div>
