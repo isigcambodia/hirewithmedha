@@ -30,12 +30,24 @@ export function canRaiseReqOnBehalf() {
   return ['hrbp', 'head_ta'].includes(state.currentRole) || state.currentMember?.role === 'admin';
 }
 
+// Effective BU scope for the current user. Normally driven by the
+// user_business_unit_ids() RPC (state.userBuIds). Fallback: if that RPC
+// returned nothing (e.g. a BU-scoped user without an explicit
+// user_business_units grant), derive the BU from the user's own employee
+// record so pickers don't silently go empty.
+function effectiveUserBuSet() {
+  const ids = state.userBuIds || [];
+  if (ids.length) return new Set(ids);
+  const ownBu = state.employeeMaps?.byUserId?.[state.currentUserId]?.business_unit_id;
+  return new Set(ownBu ? [ownBu] : []);
+}
+
 // Returns list of employees marked as Function Head or CEO (for the
 // "On behalf of" dropdown). Sorted with CEO first.
 // v37 step 6: filters to status='Active' so deactivated execs disappear,
 // and to the current user's BU scope so HRBPs only see their own execs.
 export function getExecAuthorities() {
-  const userBuSet = new Set(state.userBuIds || []);
+  const userBuSet = effectiveUserBuSet();
   const list = (state.employeeMaps.list || []).filter(e =>
     e.status === 'Active' &&
     (e.is_function_head || e.is_ceo) &&
@@ -55,7 +67,7 @@ export function getExecAuthorities() {
 // historical req) should still read state.employeeMaps.list directly so
 // inactive / out-of-scope employees can still be displayed.
 export function getActiveEmployeesInScope() {
-  const userBuSet = new Set(state.userBuIds || []);
+  const userBuSet = effectiveUserBuSet();
   return (state.employeeMaps.list || []).filter(e =>
     e.status === 'Active' &&
     (!e.business_unit_id || userBuSet.has(e.business_unit_id))
