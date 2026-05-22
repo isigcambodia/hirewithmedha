@@ -492,7 +492,7 @@ function renderNewReqForm() {
               <div class="form-hint" id="roleNewHint" style="display:none; color: var(--ink-3);">${t('hint_new_role') || 'Not in the list — will be proposed as a new role.'}</div>
             </div>
             <div class="form-group">
-              <label class="required">${t('lbl_proposed_grade')}</label>
+              <label class="required">${t('lbl_company_job_grade')}</label>
               <select id="newRoleGrade" required>
                 <option value="">${t('ph_select_grade')}</option>
                 ${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}">${esc(g.name)}</option>`).join('')}
@@ -647,9 +647,18 @@ function updateUnits() {
 // the typed title through to renderJDSlot for the JD-library lookup.
 function toggleNewRole() {
   const typed = (document.getElementById('roleSelect')?.value || '').trim();
-  const isKnown = !!(state.lookups?.jobTitles || []).find(jt => jt.name === typed);
+  const matchedTitle = (state.lookups?.jobTitles || []).find(jt => jt.name === typed);
+  const isKnown = !!matchedTitle;
   const hint = document.getElementById('roleNewHint');
   if (hint) hint.style.display = (typed && !isKnown) ? '' : 'none';
+
+  // Auto-fill company job grade from the company_job_grade table when a known role is selected.
+  const gradeEl = document.getElementById('newRoleGrade');
+  if (gradeEl && isKnown && matchedTitle) {
+    const mapping = (state.lookups?.jobGrades || []).find(jg => jg.job_title_id === matchedTitle.id);
+    if (mapping?.grade) gradeEl.value = mapping.grade;
+  }
+
   renderJDSlot(typed);
 }
 
