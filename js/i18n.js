@@ -97,7 +97,7 @@ export const TRANSLATIONS = {
     lbl_function: 'Function', lbl_subfunction: 'Department', lbl_unit: 'Section',
     lbl_bu: 'Business Unit',
     ph_select_bu: '— Select Business Unit —',
-    lbl_new_role_title: 'New role title', lbl_proposed_grade: 'Proposed grade', lbl_company_job_grade: 'Company job grade',
+    lbl_new_role_title: 'New role title', lbl_proposed_grade: 'Proposed grade', lbl_company_job_grade: 'Company Job Grade',
     lbl_jd: 'Job description', lbl_replacement: 'Replacement?',
     lbl_planned: 'Planned headcount?', lbl_justification: 'Justification',
     lbl_imm_sup: 'Immediate supervisor', lbl_same_hm: 'Is the immediate supervisor also the hiring manager?',
