@@ -492,11 +492,12 @@ function renderNewReqForm() {
               <div class="form-hint" id="roleNewHint" style="display:none; color: var(--ink-3);">${t('hint_new_role') || 'Not in the list — will be proposed as a new role.'}</div>
             </div>
             <div class="form-group">
-              <label class="required">${t('lbl_proposed_grade')}</label>
-              <select id="newRoleGrade" required>
-                <option value="">${t('ph_select_grade')}</option>
-                ${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}">${esc(g.name)}</option>`).join('')}
-              </select>
+              <label class="required">${t('lbl_company_job_grade')}</label>
+              <!-- v42 — Grade is auto-filled from company_job_grade when a role is
+                   selected. The requester cannot change it, so this is a read-only
+                   text input rather than a dropdown. -->
+              <input type="text" id="newRoleGrade" required readonly aria-readonly="true"
+                     style="background: var(--paper-2, #f5f0e6); cursor: not-allowed;">
             </div>
           </div>
 
@@ -650,6 +651,14 @@ function toggleNewRole() {
   const isKnown = !!(state.lookups?.jobTitles || []).find(jt => jt.name === typed);
   const hint = document.getElementById('roleNewHint');
   if (hint) hint.style.display = (typed && !isKnown) ? '' : 'none';
+  // v42 — Auto-fill the Company Job Grade field from the company_job_grade
+  // mapping (job title text → grade text). Clears when the role is cleared or
+  // unknown so a stale grade never sticks to a different title.
+  const gradeEl = document.getElementById('newRoleGrade');
+  if (gradeEl) {
+    const map = state.lookups?.gradeByJobTitle || {};
+    gradeEl.value = (typed && isKnown && map[typed]) ? map[typed] : '';
+  }
   renderJDSlot(typed);
 }
 
@@ -673,14 +682,15 @@ function prefillEditForm(reqId) {
     }
   }
   // Role — v42: roleSelect is now a text input bound to a datalist of titles.
-  // Pre-fill with the requisition's stored title and grade; toggleNewRole()
-  // syncs the "new role" hint + JD slot off the typed value.
+  // toggleNewRole() resolves the grade from the live company_job_grade map; if
+  // the title isn't there (older req or deprecated title) fall back to the
+  // stored grade text so editing doesn't blank it out.
   const roleEl = document.getElementById('roleSelect');
   if (roleEl) {
     roleEl.value = r.roleTitle || '';
-    const gradeEl = document.getElementById('newRoleGrade');
-    if (gradeEl) gradeEl.value = r.grade || '';
     toggleNewRole();
+    const gradeEl = document.getElementById('newRoleGrade');
+    if (gradeEl && !gradeEl.value && r.grade) gradeEl.value = r.grade;
   }
   // Replacement / planned radios
   const repRadio = document.querySelector(`input[name="isReplacement"][value="${r.isReplacement ? 'yes' : 'no'}"]`);
