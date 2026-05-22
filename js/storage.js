@@ -482,6 +482,9 @@ export async function loadEverything() {
   });
   dbg('[hwm] employees loaded:', state.employeeMaps.list.length);
 
+  console.log('[hwm-debug] userBuIds:', state.userBuIds);
+  console.log('[hwm-debug] employeeMaps.list length:', state.employeeMaps?.list?.length);
+
   // Build the recruiters-per-req lookup (M:N table)
   const recsByReq = {};
   (reqRecRes.data || []).forEach(rec => {
