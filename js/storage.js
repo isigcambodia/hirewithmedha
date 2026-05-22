@@ -482,12 +482,6 @@ export async function loadEverything() {
   });
   dbg('[hwm] employees loaded:', state.employeeMaps.list.length);
 
-  console.log('[hwm-debug] userBuIds:', state.userBuIds);
-  console.log('[hwm-debug] employeeMaps.list length:', state.employeeMaps?.list?.length);
-  console.log('[hwm-debug] sample employee[0]:', state.employeeMaps?.list?.[0]);
-  console.log('[hwm-debug] distinct status values:', [...new Set((state.employeeMaps?.list || []).map(e => e.status))]);
-  console.log('[hwm-debug] employees with business_unit_id:', (state.employeeMaps?.list || []).filter(e => e.business_unit_id).length, '/ without:', (state.employeeMaps?.list || []).filter(e => !e.business_unit_id).length);
-
   // Build the recruiters-per-req lookup (M:N table)
   const recsByReq = {};
   (reqRecRes.data || []).forEach(rec => {

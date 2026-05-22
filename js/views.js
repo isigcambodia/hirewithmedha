@@ -58,7 +58,7 @@ function addPanelMember(candId) {
   const typed = input.value.trim();
   if (!typed) return;
   const emps = getActiveEmployeesInScope();
-  const labelFor = e => `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+  const labelFor = e => `${e.name_en} — ${e.position_title || ''}`;
   const emp = emps.find(e => labelFor(e) === typed)
            || emps.find(e => (e.name_en || '').toLowerCase() === typed.toLowerCase());
   if (!emp) { alert('Please pick a name from the list'); return; }
@@ -571,11 +571,11 @@ function renderNewReqForm() {
           <div class="form-section-title">${t('sec_reporting')}</div>
           
           <!-- Shared datalist for both Supervisor and Hiring Manager autocomplete.
-               Format: "Name — Position 8" (plain numeric grade). Actual lookup
-               is by exact label match when submitted. -->
+               Format: "Name — Position". Actual lookup is by exact label match
+               when submitted. -->
           <datalist id="employeeOptions">
             ${getActiveEmployeesInScope().map(e => {
-              const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+              const label = `${e.name_en} — ${e.position_title || ''}`;
               return `<option value="${label.replace(/"/g, '&quot;')}"></option>`;
             }).join('')}
           </datalist>
@@ -727,7 +727,7 @@ function prefillEditForm(reqId) {
     // Try to find the matching employee for a richer label; fall back to raw name
     const emp = state.employeeMaps.list.find(e => e.id === r.immediateSupervisorId) ||
                 state.employeeMaps.list.find(e => e.name_en === r.immediateSupervisor);
-    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + emp.grade : ''}` : r.immediateSupervisor;
+    supEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}` : r.immediateSupervisor;
   }
   // Same HM logic — if hiringManager is empty/same as supervisor, mark "yes"; else "no" + populate
   const sameHMYes = document.querySelector(`input[name="sameHM"][value="yes"]`);
@@ -740,7 +740,7 @@ function prefillEditForm(reqId) {
     if (hmEl) {
       const emp = state.employeeMaps.list.find(e => e.id === r.hiringManagerId) ||
                   state.employeeMaps.list.find(e => e.name_en === r.hiringManager);
-      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}${emp.grade ? ' ' + emp.grade : ''}` : r.hiringManager;
+      hmEl.value = emp ? `${emp.name_en} — ${emp.position_title || ''}` : r.hiringManager;
     }
   } else {
     if (sameHMYes) sameHMYes.checked = true;
@@ -942,9 +942,9 @@ async function submitNewReq() {
   if (sameHM === 'no' && !hmTyped) { alert('Select hiring manager'); return; }
 
   // ⭐ Convert the typed label back to an employee record. Labels are
-  // "Name — Position 8" (plain numeric grade) — we match by exact label.
-  // If no match is found, the user typed a freeform value — reject.
-  const labelFor = e => `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+  // "Name — Position" — we match by exact label. If no match is found,
+  // the user typed a freeform value — reject.
+  const labelFor = e => `${e.name_en} — ${e.position_title || ''}`;
   const supEmp = state.employeeMaps.list.find(e => labelFor(e) === supTyped);
   if (!supEmp) {
     alert('Immediate supervisor must be selected from the list. Typed value "' + supTyped + '" was not found.');
@@ -3942,7 +3942,7 @@ function addFeedback(candId) {
     <p class="modal-desc"><strong>${esc(c.name)}</strong></p>
     <datalist id="fbPanelOptions">
       ${emps.map(e => {
-        const label = `${e.name_en} — ${e.position_title || ''}${e.grade ? ' ' + e.grade : ''}`;
+        const label = `${e.name_en} — ${e.position_title || ''}`;
         return `<option value="${esc(label)}"></option>`;
       }).join('')}
     </datalist>
