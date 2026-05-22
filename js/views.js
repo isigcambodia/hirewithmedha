@@ -1138,7 +1138,14 @@ async function submitNewReq() {
     resourcesRequired,
     hrbpJustification: null, fhJustification: null, ceoJustification: null,
     immediateSupervisorId: supId, hiringManagerId: hmId, requesterId: state.currentUserId,
+    // Mirror what reqToDb writes for new reqs, so the dashboard filter
+    // (r.realRequesterId === currentAuthUser.id) finds this req immediately
+    // after submit — otherwise it's hidden until the next full reload.
+    realRequesterId: state.currentAuthUser?.id || null,
+    realSupervisorId: state.currentAuthUser?.id || null,
+    realHiringManagerId: state.currentAuthUser?.id || null,
     supervisorEmpId: supEmpId, hmEmpId: hmEmpId,
+    realSupervisorEmpId: supEmpId || null, realHmEmpId: hmEmpId || null,
     jdFilename: useLibraryJD ? (selectedRoleLib.standard_jd_filename || 'Standard JD.pdf') : jdFile.name,
     // Approval path & status set conditionally:
     //  - exec_track  (HM is CEO): skip HRBP+FH, route directly to CEO
