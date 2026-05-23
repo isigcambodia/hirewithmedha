@@ -1489,3 +1489,159 @@ export function logActivity(reqId, text, meta) {
   state.activities.unshift({ reqId, date: new Date().toISOString(), text, visibleTo: ['all'], meta: meta || null });
   saveData('activities', state.activities);
 }
+
+// ============================================================
+// FUNCTION HEAD DASHBOARD — read helpers
+// ============================================================
+// These compute over the already-loaded in-memory arrays (state.requisitions,
+// state.candidates, state.activities). They don't issue extra DB calls — every
+// dashboard surface is derived from the same data the rest of the app uses.
+//
+// Scope rules:
+// - Admins (currentMember.role === 'admin') see every requisition.
+// - A specific Function Head sees:
+//     • reqs raised on behalf of them (raisedOnBehalfOfEmpId === their emp.id)
+//     • reqs where the req's function name matches their function (by function_id)
+//
+// "Active" excludes draft/closed/rejected/cancelled — the same set the table shows.
+
+const FH_ACTIVE_STATUSES = new Set([
+  'hrbp_review', 'fh_approval', 'ceo_approval', 'ta_assignment',
+  'active_sourcing', 'pending_close', 'on_hold',
+]);
+
+function _fhContext() {
+  const currentEmp = (state.employeeMaps.list || []).find(e => e.user_id === state.currentAuthUser?.id);
+  const currentEmpId = currentEmp?.id || null;
+  const myFunctionName = currentEmp?.function_id
+    ? state.deptMaps.byId?.[currentEmp.function_id]?.name || null
+    : null;
+  const isAdmin = state.currentMember?.role === 'admin';
+  return { currentEmp, currentEmpId, myFunctionName, isAdmin };
+}
+
+export function isFunctionHeadReq(r, ctx = _fhContext()) {
+  if (ctx.isAdmin) return true;
+  if (ctx.currentEmpId && r.raisedOnBehalfOfEmpId === ctx.currentEmpId) return true;
+  if (ctx.myFunctionName && r.function === ctx.myFunctionName) return true;
+  return false;
+}
+
+// Returns the six metric values needed by the FH dashboard. Each metric is
+// computed defensively so an empty state (no reqs, no candidates) returns
+// zeros / nulls rather than throwing.
+export function getFunctionHeadMetrics() {
+  const ctx = _fhContext();
+  const myReqs = (state.requisitions || []).filter(r => isFunctionHeadReq(r, ctx));
+  const myReqIds = new Set(myReqs.map(r => r.id));
+
+  // Pending approval (uses the same logic as the existing approval queue —
+  // fh_direct routes only to the named exec; standard/ceo_required route to all FHs).
+  const pendingApproval = (state.requisitions || []).filter(r => {
+    if (r.status !== 'fh_approval') return false;
+    if (r.approvalPath !== 'fh_direct') return true;
+    if (ctx.isAdmin) return true;
+    return r.raisedOnBehalfOfEmpId === ctx.currentEmpId;
+  });
+  const pendingOverSla = pendingApproval.filter(r =>
+    r.hrbpApprovedAt && (Date.now() - new Date(r.hrbpApprovedAt).getTime()) > 2 * 86400000
+  ).length;
+
+  // Active reqs (everything not draft/closed/rejected/cancelled).
+  const active = myReqs.filter(r => FH_ACTIVE_STATUSES.has(r.status));
+
+  // Quarter bounds.
+  const now = new Date();
+  const month = now.getMonth();
+  const qStart = new Date(now.getFullYear(), month - (month % 3), 1);
+  const lastQStart = new Date(qStart.getFullYear(), qStart.getMonth() - 3, 1);
+
+  const filledThisQ = myReqs.filter(r =>
+    r.closedReason === 'hired' && r.closedAt && new Date(r.closedAt) >= qStart
+  );
+  const filledLastQ = myReqs.filter(r =>
+    r.closedReason === 'hired' && r.closedAt &&
+    new Date(r.closedAt) >= lastQStart && new Date(r.closedAt) < qStart
+  );
+
+  // Candidates in pipeline — active applications attached to one of my active reqs.
+  const activeReqIds = new Set(active.map(r => r.id));
+  const candsInPipeline = (state.candidates || []).filter(c =>
+    activeReqIds.has(c.reqId) && c.status === 'active'
+  ).length;
+
+  // Avg time-to-fill (days) for reqs closed-as-hired in the named quarter.
+  function avg(reqs) {
+    const days = reqs
+      .filter(r => r.closedAt && r.submittedAt)
+      .map(r => Math.floor((new Date(r.closedAt) - new Date(r.submittedAt)) / 86400000))
+      .filter(n => Number.isFinite(n) && n >= 0);
+    if (!days.length) return null;
+    return Math.round(days.reduce((a, b) => a + b, 0) / days.length);
+  }
+  const ttfThis = avg(filledThisQ);
+  const ttfLast = avg(filledLastQ);
+
+  // Offer acceptance — every offer (any status) attached to my reqs.
+  const myCands = (state.candidates || []).filter(c => myReqIds.has(c.reqId));
+  const offers = myCands.filter(c => c.offer && c.offer.status);
+  const accepted = offers.filter(c => c.offer.status === 'accepted').length;
+
+  return {
+    pendingApproval: pendingApproval.length,
+    pendingOverSla,
+    activeCount: active.length,
+    filledThisQuarter: filledThisQ.length,
+    candidatesInPipeline: candsInPipeline,
+    avgTimeToFill: ttfThis,
+    avgTimeToFillLastQuarter: ttfLast,
+    offersTotal: offers.length,
+    offersAccepted: accepted,
+  };
+}
+
+// Returns the rows for the active-requisitions table, with a derived
+// `topStage` so the in-page filter buttons can hide/show without re-querying.
+export function getFunctionHeadRequisitions() {
+  const ctx = _fhContext();
+  const stagePriority = { offer: 5, preemployment: 4, interview: 3, screening: 2, sourcing: 1 };
+  const myReqs = (state.requisitions || [])
+    .filter(r => isFunctionHeadReq(r, ctx) && FH_ACTIVE_STATUSES.has(r.status));
+
+  return myReqs.map(r => {
+    const cands = (state.candidates || []).filter(c => c.reqId === r.id && c.status === 'active');
+    let topStage = null;
+    let topPriority = 0;
+    for (const c of cands) {
+      const p = stagePriority[c.stage] || 0;
+      if (p > topPriority) { topPriority = p; topStage = c.stage; }
+    }
+    // Reqs without candidates default to the workflow stage. Pre-sourcing
+    // statuses fall into the "sourcing" bucket so they remain visible under "All".
+    if (!topStage) topStage = 'sourcing';
+    return {
+      req: r,
+      candidateCount: cands.length,
+      topStage,
+      daysOpen: r.submittedAt
+        ? Math.floor((Date.now() - new Date(r.submittedAt).getTime()) / 86400000)
+        : 0,
+    };
+  }).sort((a, b) => {
+    const at = a.req.submittedAt ? new Date(a.req.submittedAt).getTime() : 0;
+    const bt = b.req.submittedAt ? new Date(b.req.submittedAt).getTime() : 0;
+    return bt - at;
+  });
+}
+
+// Recent activity items scoped to this FH's requisitions. Caller supplies
+// `limit` — default 10 — to keep the dashboard panel concise.
+export function getFunctionHeadActivity(limit = 10) {
+  const ctx = _fhContext();
+  const myReqIds = new Set(
+    (state.requisitions || []).filter(r => isFunctionHeadReq(r, ctx)).map(r => r.id)
+  );
+  return (state.activities || [])
+    .filter(a => myReqIds.has(a.reqId))
+    .slice(0, limit);
+}

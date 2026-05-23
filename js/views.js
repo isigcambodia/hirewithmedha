@@ -23,6 +23,7 @@ import {
   persistReqChange, saveSingleCandidate, friendlyError, persistCandidateChange,
   saveCandidates, saveActivitiesTail, loadData, toast, logActivity, saveEmployee,
   deactivateEmployee, reactivateEmployee, autoCreateEmployeeForHire, persistOfferAccepted,
+  getFunctionHeadMetrics, getFunctionHeadRequisitions, getFunctionHeadActivity,
 } from './storage.js';
 import { populateSourceDropdown, loadApplicantSources } from './applicant_sources_integration.js';
 import { renderNotificationsView } from './notifications.js';
@@ -34,6 +35,7 @@ import {
   daysSince, daysUntil, formatDate, formatDateTime,
   getSLAClass, getSLATarget, calculateTargetFillDate, getStageDate, getCurrentOwner,
   statusBadge, renderResourcesBlock, openModal, closeModal, renderReqRow,
+  formatRelativeTime, formatPercentage, formatDaysDelta,
 } from './utils.js';
 
 // Interview-panel picker selection for the feedback modal. Holds employee
@@ -1876,23 +1878,11 @@ async function submitCancel(reqId) {
 function renderFunctionHead() {
   const main = document.getElementById('mainView');
   if (state.currentView === 'req_detail' && state.selectedReqId) { main.innerHTML = renderFHDetail(state.selectedReqId); return; }
-  
-  // Find which employee the current logged-in FH user is, so we can filter
-  // fh_direct reqs (only the named exec sees their own).
-  const currentEmp = (state.employeeMaps.list || []).find(e => e.user_id === state.currentAuthUser?.id);
-  const currentEmpId = currentEmp?.id || null;
-  // Admins see everything; non-admin FHs are filtered.
-  const isAdminUser = state.currentMember?.role === 'admin';
 
-  const pending = state.requisitions.filter(r => {
-    if (r.status !== 'fh_approval') return false;
-    if (r.approvalPath !== 'fh_direct') return true;  // standard / ceo_required: visible to all FHs
-    // fh_direct: only the named exec sees it (admin sees all)
-    if (isAdminUser) return true;
-    return r.raisedOnBehalfOfEmpId === currentEmpId;
-  });
-  const breaches = pending.filter(r => daysSince(r.hrbpApprovedAt) > 2).length;
-  
+  const metrics = getFunctionHeadMetrics();
+  const reqRows = getFunctionHeadRequisitions();
+  const activity = getFunctionHeadActivity(10);
+
   main.innerHTML = `
     <div class="view-enter">
       <div class="page-header">
@@ -1902,29 +1892,255 @@ function renderFunctionHead() {
           <p>${t('sub_fh')}</p>
         </div>
       </div>
-      
-      <div class="metrics">
-        <div class="metric"><div class="metric-label">${t('metric_pending_approval')}</div><div class="metric-value">${pending.length}</div><div class="metric-sub ${breaches > 0 ? 'negative' : ''}">${breaches} ${t('txt_over_sla')}</div></div>
-        <div class="metric"><div class="metric-label">${t('metric_your_sla')}</div><div class="metric-value">2${t('txt_days').charAt(0)}</div><div class="metric-sub">${t('txt_per_req_short')}</div></div>
+
+      ${renderFHMetricsGrid(metrics)}
+      ${renderFHRequisitionsTable(reqRows)}
+      ${renderFHActivityFeed(activity)}
+    </div>
+  `;
+}
+
+// ----- Section 1: 6-card metrics grid -----------------------------------
+function renderFHMetricsGrid(m) {
+  const dSuffix = t('txt_days').charAt(0);
+  const ttfDelta = formatDaysDelta(m.avgTimeToFill, m.avgTimeToFillLastQuarter);
+  const ttfDeltaClass = (m.avgTimeToFill != null && m.avgTimeToFillLastQuarter != null && m.avgTimeToFill < m.avgTimeToFillLastQuarter)
+    ? 'positive'
+    : (m.avgTimeToFill != null && m.avgTimeToFillLastQuarter != null && m.avgTimeToFill > m.avgTimeToFillLastQuarter)
+      ? 'negative'
+      : '';
+
+  return `
+    <div class="fh-metrics">
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('metric_pending_approval')}</div>
+        <div class="fh-metric-value">${m.pendingApproval}</div>
+        <div class="fh-metric-sub ${m.pendingOverSla > 0 ? 'negative' : ''}">${m.pendingOverSla} ${t('txt_over_sla')}</div>
       </div>
-      
-      <div class="panel">
-        <div class="panel-header"><div class="panel-title">${t('sec_queue')}</div><span class="text-xs text-muted">${pending.length}</span></div>
-        ${pending.length === 0 ? `<div class="empty"><div class="empty-icon">${ICONS.empty}</div><div class="empty-title">${t('empty_caught_up')}</div><div class="empty-desc">${t('empty_caught_up_fh')}</div></div>` : `
-          <table class="table">
-            <thead><tr><th>${t('th_req_id')}</th><th>${t('th_role')}</th><th>${t('th_requester')}</th><th>${t('th_path')}</th><th>${t('th_hrbp_approved')}</th><th>${t('th_sla')}</th></tr></thead>
-            <tbody>${pending.map(r => `
-              <tr class="clickable" onclick="viewReq('${escJs(r.id)}')">
-                <td><span class="req-id">${esc(r.id)}</span></td>
-                <td><div class="role-title">${esc(r.roleTitle)}</div><div class="role-meta">${esc([getBuName(r.buId), r.function].filter(Boolean).join(" · ") + (r.grade ? " · " + r.grade : ""))}</div></td>
-                <td>${getRequesterDisplay(r)}</td>
-                <td>${r.approvalPath === 'ceo_required' ? `<span class="badge badge-ceo">${t('st_ceo_required')}</span>` : `<span class="badge badge-neutral">${t('st_standard')}</span>`}</td>
-                <td>${formatDate(r.hrbpApprovedAt)}</td>
-                <td><div class="sla-indicator ${getSLAClass(daysSince(r.hrbpApprovedAt), 2)}"><span class="sla-value">${daysSince(r.hrbpApprovedAt)}${t('txt_days').charAt(0)}</span><span class="sla-target">/ 2${t('txt_days').charAt(0)}</span></div></td>
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('metric_your_sla')}</div>
+        <div class="fh-metric-value">2${dSuffix}</div>
+        <div class="fh-metric-sub">${t('txt_per_req_short')}</div>
+      </div>
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('fh_metric_active_reqs')}</div>
+        <div class="fh-metric-value">${m.activeCount}</div>
+        <div class="fh-metric-sub">${m.filledThisQuarter} ${t('fh_metric_filled_qtr')}</div>
+      </div>
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('fh_metric_cands_pipeline')}</div>
+        <div class="fh-metric-value">${m.candidatesInPipeline}</div>
+        <div class="fh-metric-sub">${t('fh_metric_across_roles')}</div>
+      </div>
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('fh_metric_avg_ttf')}</div>
+        <div class="fh-metric-value">${m.avgTimeToFill != null ? `${m.avgTimeToFill}${dSuffix}` : '—'}</div>
+        <div class="fh-metric-sub ${ttfDeltaClass}">${ttfDelta ? `${ttfDelta} ${t('fh_metric_vs_last_qtr')}` : t('fh_metric_no_data')}</div>
+      </div>
+      <div class="fh-metric-card">
+        <div class="fh-metric-label">${t('fh_metric_offer_acceptance')}</div>
+        <div class="fh-metric-value">${m.offersTotal > 0 ? formatPercentage(m.offersAccepted, m.offersTotal) : '—'}</div>
+        <div class="fh-metric-sub">${m.offersTotal > 0
+          ? `${m.offersAccepted} ${t('fh_metric_of_accepted').replace('{total}', m.offersTotal)}`
+          : t('fh_metric_no_offers')}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ----- Section 2: requisitions table with stage filter -------------------
+const FH_STAGE_LABELS = {
+  sourcing: 'fh_filter_sourcing',
+  screening: 'fh_filter_screening',
+  interview: 'fh_filter_interview',
+  preemployment: 'stage_preemployment',
+  offer: 'fh_filter_offer',
+};
+const FH_STAGE_BADGE_CLASS = {
+  sourcing: 'fh-stage-badge fh-stage-sourcing',
+  screening: 'fh-stage-badge fh-stage-screening',
+  interview: 'fh-stage-badge fh-stage-interview',
+  preemployment: 'fh-stage-badge fh-stage-preemployment',
+  offer: 'fh-stage-badge fh-stage-offer',
+};
+
+function renderFHRequisitionsTable(rows) {
+  const counts = { all: rows.length, sourcing: 0, screening: 0, interview: 0, offer: 0 };
+  for (const row of rows) {
+    if (row.topStage === 'sourcing') counts.sourcing++;
+    else if (row.topStage === 'screening') counts.screening++;
+    else if (row.topStage === 'interview') counts.interview++;
+    else if (row.topStage === 'offer') counts.offer++;
+  }
+  const filters = [
+    { key: 'all', label: t('fh_filter_all'), count: counts.all },
+    { key: 'sourcing', label: t('fh_filter_sourcing'), count: counts.sourcing },
+    { key: 'screening', label: t('fh_filter_screening'), count: counts.screening },
+    { key: 'interview', label: t('fh_filter_interview'), count: counts.interview },
+    { key: 'offer', label: t('fh_filter_offer'), count: counts.offer },
+  ];
+
+  const filterBar = `
+    <div class="fh-filter-buttons" id="fhFilterButtons">
+      ${filters.map(f => `
+        <button type="button"
+                class="fh-filter-btn ${f.key === 'all' ? 'active' : ''}"
+                data-filter="${f.key}"
+                onclick="filterFHReqs('${f.key}')">
+          ${esc(f.label)} <span class="fh-filter-count">(${f.count})</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  const dSuffix = t('txt_days').charAt(0);
+
+  return `
+    <div class="fh-section">
+      <div class="fh-section-header">
+        <h2 class="fh-section-title">${t('fh_sec_your_reqs')}</h2>
+        ${filterBar}
+      </div>
+      <div class="fh-table-container">
+        ${rows.length === 0 ? `
+          <div class="empty">
+            <div class="empty-icon">${ICONS.empty}</div>
+            <div class="empty-title">${t('fh_empty_no_reqs_title')}</div>
+            <div class="empty-desc">${t('fh_empty_no_reqs_desc')}</div>
+          </div>
+        ` : `
+          <table class="fh-requisitions-table">
+            <thead>
+              <tr>
+                <th>${t('fh_tbl_position')}</th>
+                <th>${t('fh_tbl_status')}</th>
+                <th>${t('fh_tbl_recruiter')}</th>
+                <th>${t('fh_tbl_candidates')}</th>
+                <th>${t('fh_tbl_days_open')}</th>
+                <th></th>
               </tr>
-            `).join('')}</tbody>
+            </thead>
+            <tbody id="fhReqsBody">
+              ${rows.map(row => renderFHRequisitionRow(row, dSuffix)).join('')}
+            </tbody>
           </table>
+          <div id="fhReqsEmptyFilter" class="empty fh-empty-filter" style="display:none;">
+            <div class="empty-desc">${t('fh_empty_no_match')}</div>
+          </div>
         `}
+      </div>
+    </div>
+  `;
+}
+
+function renderFHRequisitionRow(row, dSuffix) {
+  const r = row.req;
+  const stage = row.topStage;
+  const stageLabel = t(FH_STAGE_LABELS[stage] || 'fh_filter_sourcing');
+  const stageClass = FH_STAGE_BADGE_CLASS[stage] || FH_STAGE_BADGE_CLASS.sourcing;
+  const recruiterName = (r.assignedRecruiters && r.assignedRecruiters.length > 0)
+    ? r.assignedRecruiters.map(uid => getUserName(uid)).filter(Boolean).join(', ')
+    : t('fh_tbl_unassigned');
+  const subtitleParts = [r.grade ? `${t('th_grade')} ${r.grade}` : null, r.function || null].filter(Boolean);
+  const subtitle = subtitleParts.join(' · ');
+
+  return `
+    <tr class="fh-req-row clickable" data-stage="${esc(stage)}" onclick="viewReq('${escJs(r.id)}')">
+      <td>
+        <div class="fh-position-title">${esc(r.roleTitle || '—')}</div>
+        ${subtitle ? `<div class="fh-position-subtitle">${esc(subtitle)}</div>` : ''}
+      </td>
+      <td><span class="${stageClass}">${esc(stageLabel)}</span></td>
+      <td class="fh-recruiter-cell">${esc(recruiterName)}</td>
+      <td class="fh-cand-count"><span class="fh-cand-count-pill">${row.candidateCount}</span></td>
+      <td class="fh-days-open">${row.daysOpen}${dSuffix}</td>
+      <td class="fh-row-action">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); viewReq('${escJs(r.id)}')">${t('fh_tbl_view')}</button>
+      </td>
+    </tr>
+  `;
+}
+
+// Filter handler — DOM-only, no re-query. Hides non-matching rows and shows
+// the empty-state placeholder when the selection has zero matches.
+function filterFHReqs(stageKey) {
+  const buttons = document.querySelectorAll('#fhFilterButtons .fh-filter-btn');
+  buttons.forEach(b => b.classList.toggle('active', b.dataset.filter === stageKey));
+  const body = document.getElementById('fhReqsBody');
+  if (!body) return;
+  let visible = 0;
+  body.querySelectorAll('tr.fh-req-row').forEach(tr => {
+    const match = stageKey === 'all' || tr.dataset.stage === stageKey;
+    tr.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  const emptyEl = document.getElementById('fhReqsEmptyFilter');
+  if (emptyEl) emptyEl.style.display = visible === 0 ? '' : 'none';
+}
+
+// ----- Section 3: recent activity feed ----------------------------------
+function fhActivityIconFor(a) {
+  const text = (a.text || '').toLowerCase();
+  // Stage transitions
+  if (text.includes('interview') && text.includes('scheduled')) return { icon: 'calendar', tone: 'info' };
+  if (text.includes('moved to interview') || text.includes('→ interview')) return { icon: 'user-check', tone: 'info' };
+  if (text.includes('moved to screening') || text.includes('→ screening')) return { icon: 'users', tone: 'info' };
+  if (text.includes('moved to pre') || text.includes('→ preemployment')) return { icon: 'shield-check', tone: 'info' };
+  if (text.includes('moved to offer') || text.includes('→ offer')) return { icon: 'mail', tone: 'info' };
+  if (text.includes('offer accepted') || (text.includes('accepted') && text.includes('offer'))) return { icon: 'check', tone: 'success' };
+  if (text.includes('offer sent') || text.includes('offer prepared')) return { icon: 'mail', tone: 'info' };
+  if (text.includes('hired')) return { icon: 'check', tone: 'success' };
+  if (text.includes('candidate added') || text.includes('new candidate')) return { icon: 'user-plus', tone: 'info' };
+  if (text.includes('approved')) return { icon: 'check', tone: 'success' };
+  if (text.includes('rejected') || text.includes('declined')) return { icon: 'x', tone: 'danger' };
+  if (text.includes('assigned') && text.includes('recruiter')) return { icon: 'user-cog', tone: 'info' };
+  return { icon: 'bell', tone: 'info' };
+}
+
+function fhActivitySvgIcon(name) {
+  const s = 'width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+  switch (name) {
+    case 'user-check':    return `<svg ${s}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>`;
+    case 'users':         return `<svg ${s}><path d="M17 21v-2a4 4 0 0 0-3-3.87"/><path d="M9 21v-2a4 4 0 0 1 4-4h0a4 4 0 0 1 4 4"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
+    case 'user-plus':     return `<svg ${s}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>`;
+    case 'user-cog':      return `<svg ${s}><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="18" cy="15" r="3"/><path d="M18 11v1"/><path d="M18 18v1"/></svg>`;
+    case 'calendar':      return `<svg ${s}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`;
+    case 'check':         return `<svg ${s}><polyline points="20 6 9 17 4 12"/></svg>`;
+    case 'x':             return `<svg ${s}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    case 'mail':          return `<svg ${s}><path d="M4 4h16c1 0 2 1 2 2v12c0 1-1 2-2 2H4c-1 0-2-1-2-2V6c0-1 1-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`;
+    case 'shield-check':  return `<svg ${s}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>`;
+    case 'bell':
+    default:              return `<svg ${s}><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>`;
+  }
+}
+
+function renderFHActivityFeed(items) {
+  return `
+    <div class="fh-section">
+      <div class="fh-section-header">
+        <h2 class="fh-section-title">${t('fh_sec_activity')}</h2>
+      </div>
+      <div class="fh-activity-panel">
+        ${items.length === 0 ? `
+          <div class="empty">
+            <div class="empty-icon">${ICONS.empty}</div>
+            <div class="empty-title">${t('fh_empty_activity_title')}</div>
+            <div class="empty-desc">${t('fh_empty_activity_desc')}</div>
+          </div>
+        ` : items.map(a => {
+          const { icon, tone } = fhActivityIconFor(a);
+          const req = state.requisitions.find(r => r.id === a.reqId);
+          const meta = [req?.roleTitle, formatRelativeTime(a.date)].filter(Boolean).join(' · ');
+          return `
+            <div class="fh-activity-item">
+              <div class="fh-activity-icon fh-activity-icon-${tone}">${fhActivitySvgIcon(icon)}</div>
+              <div class="fh-activity-content">
+                <div class="fh-activity-title">${esc(a.text || '')}</div>
+                ${meta ? `<div class="fh-activity-meta">${esc(meta)}</div>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
       </div>
     </div>
   `;
@@ -6057,6 +6273,10 @@ export {
   renderExecAuthority,
   renderFHDetail,
   renderFunctionHead,
+  renderFHMetricsGrid,
+  renderFHRequisitionsTable,
+  renderFHActivityFeed,
+  filterFHReqs,
   renderHRBP,
   renderHRBPDetail,
   renderHeadTA,
