@@ -1117,3 +1117,217 @@ details.collapsible > *:not(summary) { margin-top: 1rem; }
   .detail-row { grid-template-columns: 1fr; gap: 0.2rem; }
   .pipeline-stats { grid-template-columns: repeat(5, minmax(70px, 1fr)); overflow-x: auto; }
 }
+
+/* =========================================================
+   FUNCTION HEAD DASHBOARD — redesigned 3-section layout
+   ========================================================= */
+
+/* Section 1: 6-card metrics grid (replaces the 2-card .metrics row on this view) */
+.fh-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 2rem;
+}
+.fh-metric-card {
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: 1.1rem 1.2rem;
+}
+.fh-metric-label {
+  font-size: 0.72rem;
+  color: var(--ink-3);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
+}
+.fh-metric-value {
+  font-family: var(--font-serif);
+  font-size: 1.75rem;
+  font-weight: 400;
+  color: var(--ink);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variation-settings: "opsz" 60;
+}
+.fh-metric-sub {
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  margin-top: 0.4rem;
+}
+.fh-metric-sub.positive { color: var(--success); }
+.fh-metric-sub.negative { color: var(--danger); }
+
+/* Section header (used by both the requisitions table and activity panels) */
+.fh-section { margin-bottom: 1.75rem; }
+.fh-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+.fh-section-title {
+  font-family: var(--font-serif);
+  font-size: 1.1rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* Filter pill buttons */
+.fh-filter-buttons {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.fh-filter-btn {
+  font-family: inherit;
+  font-size: 0.78rem;
+  padding: 0.35rem 0.75rem;
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.fh-filter-btn:hover {
+  background: var(--paper-3);
+  border-color: var(--rule-dark);
+}
+.fh-filter-btn.active {
+  background: var(--brand-navy);
+  border-color: var(--brand-navy);
+  color: white;
+}
+.fh-filter-btn.active .fh-filter-count { color: rgba(255,255,255,0.85); }
+.fh-filter-count {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  margin-left: 0.15rem;
+}
+
+/* Active requisitions table */
+.fh-table-container {
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+}
+.fh-requisitions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.fh-requisitions-table thead {
+  background: var(--paper-2);
+}
+.fh-requisitions-table th {
+  text-align: left;
+  padding: 0.75rem 1.2rem;
+  font-weight: 600;
+  font-size: 0.68rem;
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+}
+.fh-requisitions-table td {
+  padding: 0.85rem 1.2rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+.fh-requisitions-table tbody tr:last-child td { border-bottom: none; }
+.fh-requisitions-table tbody tr.clickable { cursor: pointer; transition: background 0.1s; }
+.fh-requisitions-table tbody tr.clickable:hover { background: var(--paper-3); }
+
+.fh-position-title { font-weight: 500; color: var(--ink); margin-bottom: 0.1rem; }
+.fh-position-subtitle { font-size: 0.75rem; color: var(--ink-3); }
+.fh-recruiter-cell { color: var(--ink-2); }
+.fh-days-open { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.fh-row-action { text-align: right; white-space: nowrap; }
+.fh-cand-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stage badges */
+.fh-stage-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.fh-stage-sourcing      { background: var(--info-bg);    color: var(--info); }
+.fh-stage-screening     { background: #EEEDFE;           color: #3C3489; }
+.fh-stage-interview     { background: #FAEEDA;           color: #633806; }
+.fh-stage-preemployment { background: #E6F0FA;           color: #1F3658; }
+.fh-stage-offer         { background: var(--success-bg); color: var(--success); }
+
+.fh-empty-filter {
+  padding: 1.75rem 1rem;
+}
+
+/* Section 3: activity feed */
+.fh-activity-panel {
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: 0.5rem 1.2rem;
+}
+.fh-activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.fh-activity-item:last-child { border-bottom: none; }
+.fh-activity-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fh-activity-icon-info    { background: var(--info-bg);    color: var(--info); }
+.fh-activity-icon-success { background: var(--success-bg); color: var(--success); }
+.fh-activity-icon-danger  { background: var(--danger-bg);  color: var(--danger); }
+.fh-activity-icon-warning { background: var(--warning-bg); color: var(--warning); }
+.fh-activity-content { flex: 1; min-width: 0; }
+.fh-activity-title {
+  font-size: 0.88rem;
+  color: var(--ink);
+  margin-bottom: 0.15rem;
+}
+.fh-activity-meta {
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+/* Responsive — narrower viewports */
+@media (max-width: 768px) {
+  .fh-metrics { grid-template-columns: 1fr 1fr; }
+  .fh-section-header { flex-direction: column; align-items: flex-start; }
+  .fh-requisitions-table th,
+  .fh-requisitions-table td { padding: 0.7rem 0.85rem; }
+}

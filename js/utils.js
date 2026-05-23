@@ -198,6 +198,47 @@ export function daysUntil(dateStr) { if (!dateStr) return 0; return Math.floor((
 export function formatDate(d) { if (!d) return '—'; return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); }
 export function formatDateTime(d) { if (!d) return '—'; return new Date(d).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
 
+// First day (00:00) of the calendar quarter containing `d`.
+export function quarterStart(d = new Date()) {
+  const dt = new Date(d);
+  const month = dt.getMonth();
+  const qMonth = month - (month % 3);
+  return new Date(dt.getFullYear(), qMonth, 1, 0, 0, 0, 0);
+}
+
+// "1 hr ago", "Yesterday", etc. — language-aware via the same translation
+// keys used elsewhere in the FH dashboard.
+export function formatRelativeTime(timestamp) {
+  if (!timestamp) return '';
+  const then = new Date(timestamp);
+  const diffMs = Date.now() - then.getTime();
+  if (isNaN(diffMs) || diffMs < 0) return formatDate(timestamp);
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return t('fh_time_just_now');
+  if (mins < 60) return t('fh_time_min_ago').replace('{n}', mins);
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return (hrs === 1 ? t('fh_time_hr_ago') : t('fh_time_hrs_ago')).replace('{n}', hrs);
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return t('fh_time_yesterday');
+  if (days < 7) return t('fh_time_days_ago').replace('{n}', days);
+  return formatDate(timestamp);
+}
+
+// Integer percentage with a safe "0%" fallback when the denominator is zero.
+export function formatPercentage(numerator, denominator) {
+  if (!denominator || denominator <= 0) return '0%';
+  return `${Math.round((numerator / denominator) * 100)}%`;
+}
+
+// "+3d" / "-2d" / "±0d" for trend deltas in the metric subtext.
+export function formatDaysDelta(current, previous) {
+  if (current == null || previous == null) return null;
+  const delta = current - previous;
+  if (delta === 0) return `±0${t('txt_days').charAt(0)}`;
+  const suffix = t('txt_days').charAt(0);
+  return delta > 0 ? `+${delta}${suffix}` : `${delta}${suffix}`;
+}
+
 export function getSLAClass(days, target) {
   if (target === 0) return '';
   if (days <= target) return 'sla-good';
