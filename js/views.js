@@ -3025,6 +3025,7 @@ function renderCandCard(c, isOnHold = false) {
     else if (c.offer.status === 'sent') actions = `<button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button><button class="btn btn-warning" onclick="offerResponse('${escJs(c.id)}', 'negotiating')" ${dis}>Negotiate</button><button class="btn btn-danger" onclick="offerResponse('${escJs(c.id)}', 'declined')" ${dis}>Decline</button>`;
     else if (c.offer.status === 'accepted') actions = `<span class="badge badge-success">${ICONS.check} Accepted</span>`;
     else if (c.offer.status === 'negotiating') actions = `<button class="btn btn-secondary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Update</button><button class="btn btn-success" onclick="offerResponse('${escJs(c.id)}', 'accepted')" ${dis}>Accept</button>`;
+    else if (c.offer.status === 'declined') actions = `<span class="badge badge-danger">Declined</span><button class="btn btn-secondary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Re-offer</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'hired') {
     // Terminal state — no further actions. One-way per the v36 spec.
     actions = `<span class="badge badge-success">${ICONS.check} ${t('stage_hired') || 'Hired'}</span>`;
@@ -4395,16 +4396,12 @@ async function offerResponse(candId, response) {
     return;
   }
 
-  // Declined / negotiating — unchanged behavior.
+  // Declined / negotiating — candidate stays in the offer column either way.
+  // Declined no longer auto-rejects the candidate so the recruiter can re-offer
+  // or rejectCandidate() manually from the same kanban card.
   c.offer.status = response;
   c.offer.respondedAt = new Date().toISOString();
-  let reqActivity = null;
-  if (response === 'declined') {
-    c.status = 'rejected';
-    reqActivity = 'Offer declined';
-  } else {
-    reqActivity = 'Candidate negotiating offer';
-  }
+  const reqActivity = response === 'declined' ? 'Offer declined' : 'Candidate negotiating offer';
   await persistCandidateChange(c, reqActivity, { closeModal: false });
 }
 
