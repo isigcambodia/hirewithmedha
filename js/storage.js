@@ -1152,6 +1152,12 @@ export function friendlyError(e) {
         hint: 'An admin needs to run docs/v38_applicant_source_fix.sql so candidates.source accepts every code in applicant_sources.'
       };
     }
+    if (msg.includes('offer_status')) {
+      return {
+        title: 'The "Negotiate" status is not allowed by the database yet',
+        hint: 'An admin needs to run docs/v41_offer_status_negotiating.sql so applications.offer_status accepts "negotiating".'
+      };
+    }
     return {
       title: 'That value is not allowed by the database',
       hint: 'Please pick a different option and try again.'

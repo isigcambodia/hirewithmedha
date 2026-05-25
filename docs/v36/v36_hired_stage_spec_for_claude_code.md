@@ -36,7 +36,7 @@ they are. The new "Hired" column displays candidates who've been hired.
 | `candidate_stage`       | text        | CHECK in (`'sourcing'`,`'screening'`,`'interview'`,`'preemployment'`,`'offer'`,`'hired'`,`'rejected'`,`'withdrawn'`) |
 | `stage_changed_at`      | timestamptz | Updated on every stage transition                                                        |
 | `status`                | text        | Top-level application status (e.g. `'active'`, `'rejected'`)                             |
-| `offer_status`          | text        | CHECK in (`'draft'`,`'sent'`,`'accepted'`,`'declined'`,`'rescinded'`,`'expired'`)         |
+| `offer_status`          | text        | CHECK in (`'draft'`,`'sent'`,`'negotiating'`,`'accepted'`,`'declined'`,`'rescinded'`,`'expired'`) — `'negotiating'` added in v41 |
 | `offer_salary`          | numeric     |                                                                                          |
 | `offer_grade`           | text        |                                                                                          |
 | `offer_start_date`      | date        |                                                                                          |
