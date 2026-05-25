@@ -3059,7 +3059,7 @@ function renderCandCard(c, isOnHold = false) {
       <div class="cand-meta">${c.source} · <span class="mono">${daysSince(c.stageChangedAt)}d</span> in stage</div>
       ${c.stage === 'interview' ? `<div class="cand-meta"><span class="badge ${(c.interviewStep || 'step_1') === 'final' ? 'badge-info' : 'badge-neutral'}">${t('btn_interview') || 'Interview'}: ${ivStepLabel(c.interviewStep || 'step_1')}</span></div>` : ''}
       ${c.stage === 'interview' && c.interview ? `<div class="cand-meta">${formatDate(c.interview.datetime)}</div>` : ''}
-      ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">$${c.offer.salary} · ${c.offer.grade}</div>` : ''}
+      ${c.stage === 'offer' && c.offer ? `<div class="cand-meta mono">${c.offer.grade}</div>` : ''}
       ${cvButton}
       ${veButtons}
       <div class="cand-actions">${actions}</div>
@@ -4333,10 +4333,7 @@ function prepareOffer(candId) {
   openModal(`
     <div class="modal-header"><h2>${t('modal_prep_offer')}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <p class="modal-desc"><strong>${esc(c.name)}</strong> — ${esc(r.roleTitle)}</p>
-    <div class="form-grid-2">
-      <div class="form-group"><label class="required">${t('lbl_salary')}</label><input type="number" id="offSal" value="${e.salary || ''}"></div>
-      <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g.name ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
-    </div>
+    <div class="form-group"><label class="required">${t('lbl_grade')}</label><select id="offGrade">${(state.lookups?.grades || []).map(g => `<option value="${esc(g.name)}" ${String(e.grade || r.grade || '').replace(/^G/i, '') === g.name ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
     <div class="form-group"><label class="required">${t('lbl_start_date')}</label><input type="date" id="offStart" value="${e.startDate || ''}"></div>
     <div class="form-group"><label>${t('lbl_benefits')}</label><textarea id="offBen" rows="3">${e.benefits || ''}</textarea></div>
     <div class="form-group"><label>${t('lbl_add_notes')}</label><textarea id="offNotes" rows="2">${e.notes || ''}</textarea></div>
@@ -4353,10 +4350,12 @@ function prepareOffer(candId) {
 
 async function sendOffer(candId) {
   const c = state.candidates.find(x => x.id === candId);
-  const sal = document.getElementById('offSal').value;
   const sd = document.getElementById('offStart').value;
-  if (!sal || !sd) { alert('Salary and start date required'); return; }
-  c.offer = { salary: parseFloat(sal), grade: document.getElementById('offGrade').value, startDate: sd, benefits: document.getElementById('offBen').value, notes: document.getElementById('offNotes').value, sentAt: new Date().toISOString(), status: 'sent' };
+  if (!sd) { alert('Start date required'); return; }
+  // Salary is intentionally not captured at offer-preparation time (sensitive
+  // PII). offer_salary stays null on the application row; downstream code in
+  // storage.js already handles null via the ?? null fallback.
+  c.offer = { grade: document.getElementById('offGrade').value, startDate: sd, benefits: document.getElementById('offBen').value, notes: document.getElementById('offNotes').value, sentAt: new Date().toISOString(), status: 'sent' };
   await persistCandidateChange(c, 'Offer sent to candidate');
 }
 
