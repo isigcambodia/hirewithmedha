@@ -3011,14 +3011,15 @@ function renderCandCard(c, isOnHold = false) {
     }
     actions = fb + stepBtns + preEmpBtn + rej;
   } else if (c.stage === 'preemployment') {
-    // Pre-employment "all checks pass" gating: required = reference, background, education, COI document.
+    // Pre-employment "all checks pass" gating: required = reference, background, education, COI.
     // Criminal record check is OPTIONAL (per TA team feedback 27 Apr — sometimes not applicable).
-    // COI is satisfied by an UPLOADED signed declaration form (v35), not a checkbox.
+    // COI is now satisfied by ticking the checkbox; the signed-declaration upload is OPTIONAL
+    // (reverses the v35 doc-required rule per product feedback).
     const allOK = c.preEmploymentChecks
       && c.preEmploymentChecks.reference
       && c.preEmploymentChecks.background
       && c.preEmploymentChecks.education
-      && !!c.preEmploymentChecks.coiStoragePath;
+      && c.preEmploymentChecks.coi;
     actions = `<button class="btn btn-secondary" onclick="updateChecks('${escJs(c.id)}')" ${dis}>Checks</button><button class="btn btn-primary" onclick="moveCandidate('${escJs(c.id)}', 'offer')" ${allOK && !isOnHold ? '' : 'disabled'}>Offer</button><button class="btn btn-danger" onclick="rejectCandidate('${escJs(c.id)}')" ${dis}>${ICONS.x}</button>`;
   } else if (c.stage === 'offer') {
     if (!c.offer) actions = `<button class="btn btn-primary" onclick="prepareOffer('${escJs(c.id)}')" ${dis}>Prepare offer</button>`;
@@ -4216,13 +4217,15 @@ function updateChecks(candId) {
       <label class="checkbox-row"><input type="checkbox" id="chkRef" ${checks.reference ? 'checked' : ''}> ${t('chk_ref')}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkBack" ${checks.background ? 'checked' : ''}> ${t('chk_back')}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkEdu" ${checks.education ? 'checked' : ''}> ${t('chk_edu')}</label>
+      <label class="checkbox-row"><input type="checkbox" id="chkCOI" ${checks.coi ? 'checked' : ''}> ${t('chk_coi')}</label>
       <label class="checkbox-row"><input type="checkbox" id="chkCrim" ${checks.criminal ? 'checked' : ''}> ${t('chk_crim')} <span class="text-xs text-muted">(optional)</span></label>
     </div>
 
-    <!-- COI is special: it's a signed declaration form, not a yes/no toggle.
-         We track the uploaded document path; "complete" = file present. -->
+    <!-- COI document upload is now OPTIONAL — the checkbox above is what
+         gates the move to Offer. The upload remains as a place to attach
+         the signed declaration form when it is available. -->
     <div class="form-group" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--rule);">
-      <label style="display: block; margin-bottom: 0.5rem; font-weight: 500;">${t('lbl_coi') || 'Conflict of Interest (COI) declaration'}</label>
+      <label style="display: block; margin-bottom: 0.5rem; font-weight: 500;">${t('lbl_coi') || 'Conflict of Interest (COI) declaration'} <span class="text-xs text-muted">(optional)</span></label>
       <div id="coiSlot" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--rule); border-radius: var(--radius-sm); background: var(--paper);">
         ${hasCOI ? `
           <div style="color: var(--success); display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem;">
@@ -4259,7 +4262,7 @@ async function saveChecks(candId) {
     background: document.getElementById('chkBack').checked,
     criminal: document.getElementById('chkCrim').checked,
     education: document.getElementById('chkEdu').checked,
-    coi: !!existing.coiStoragePath,  // legacy boolean = derived from doc presence
+    coi: document.getElementById('chkCOI').checked,
     coiStoragePath: existing.coiStoragePath || null,
     coiFilename: existing.coiFilename || null,
     coiUploadedAt: existing.coiUploadedAt || null,
